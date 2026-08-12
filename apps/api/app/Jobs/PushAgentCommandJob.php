@@ -74,6 +74,20 @@ class PushAgentCommandJob implements ShouldQueue
                 return;
             }
 
+            // Empty/non-JSON response means the agent endpoint did not answer properly
+            // (e.g. redirect or HTML error page) – never treat that as success.
+            if ($result === []) {
+                AgentJob::where('id', $job->id)
+                    ->whereIn('status', ['pending', 'running'])
+                    ->update([
+                        'status' => 'failed',
+                        'error' => 'Agent-Antwort ungültig (kein JSON) – REST-Endpoint der Site prüfen (Permalinks?)',
+                        'finished_at' => now(),
+                    ]);
+
+                return;
+            }
+
             $ok = ($result['ok'] ?? true) !== false;
             AgentJob::where('id', $job->id)
                 ->whereIn('status', ['pending', 'running'])

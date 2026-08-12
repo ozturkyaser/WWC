@@ -15,6 +15,7 @@ type Backup = {
   label?: string;
   created_at: string;
   size_bytes?: number;
+  offsite?: boolean;
 };
 
 type Staging = {
@@ -129,11 +130,25 @@ type MaintenanceRun = {
   } | null;
 };
 
+type ScanReport = {
+  ok?: boolean;
+  scanned_at?: string;
+  included?: { files?: number; bytes?: number };
+  excluded?: { files?: number; bytes?: number };
+  auto_skipped?: { files?: number; bytes?: number; groups?: Array<{ path: string; size_bytes: number }> };
+  db_bytes?: number;
+  estimated_backup_bytes?: number;
+  top_files?: Array<{ path: string; size_bytes: number; status: string }>;
+  top_dirs?: Array<{ path: string; size_bytes: number }>;
+  settings?: { max_file_mb?: number; excludes?: string[] };
+};
+
 function formatBytes(n?: number) {
   if (!n) return "–";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 export default function SiteDetailPage() {
@@ -146,6 +161,24 @@ export default function SiteDetailPage() {
   const [tab, setTab] = useState("overview");
   const [selectedUpdates, setSelectedUpdates] = useState<Set<string>>(new Set());
   const [maintBusy, setMaintBusy] = useState(false);
+  const [scanExcludes, setScanExcludes] = useState<Set<string>>(new Set());
+  const [saveScanSettings, setSaveScanSettings] = useState(true);
+  const [scanInitId, setScanInitId] = useState("");
+
+  const latestScanJob = (detail?.jobs || []).find(
+    (j) => j.command === "backup_scan" && j.status === "completed"
+  );
+  const scanReport = latestScanJob ? (latestScanJob.result as unknown as ScanReport | null) : null;
+
+  useEffect(() => {
+    // Pre-select files the current settings would exclude anyway
+    if (latestScanJob && latestScanJob.id !== scanInitId && scanReport?.top_files) {
+      setScanInitId(latestScanJob.id);
+      setScanExcludes(
+        new Set(scanReport.top_files.filter((f) => f.status !== "included").map((f) => f.path))
+      );
+    }
+  }, [latestScanJob?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
     const res = await api<SiteDetail>(`/sites/${params.id}`);
@@ -951,7 +984,22 @@ export default function SiteDetailPage() {
       {tab === "backups" && (
         <div className="surface surface-pad">
           <div className="row" style={{ marginBottom: 14 }}>
-            <button className="btn" disabled={busy} type="button" onClick={() => run("backup_full", { label: "manual-full" })}>
+            <button className="btn secondary" disabled={busy} type="button" onClick={() => run("backup_scan", {})}>
+              Analyse vor Backup
+            </button>
+            <button
+              className="btn"
+              disabled={busy}
+              type="button"
+              onClick={() =>
+                run("backup_full", {
+                  label: "manual-full",
+                  ...(scanReport
+                    ? { excludes: [...scanExcludes], save_settings: saveScanSettings }
+                    : {}),
+                })
+              }
+            >
               Full Backup
             </button>
             <button className="btn secondary" disabled={busy} type="button" onClick={() => run("backup_incremental", { label: "manual-incr" })}>
@@ -978,6 +1026,103 @@ export default function SiteDetailPage() {
               Letzten Stand herunterladen
             </button>
           </div>
+
+          {scanReport && (
+            <div className="surface surface-pad" style={{ marginBottom: 16, background: "rgba(0,0,0,0.18)" }}>
+              <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>
+                Backup-Analyse
+                <span className="muted" style={{ fontWeight: 400, marginLeft: 8, fontSize: "0.8rem" }}>
+                  {scanReport.scanned_at ? new Date(scanReport.scanned_at).toLocaleString("de-DE") : ""}
+                </span>
+              </h4>
+              <div className="meta-row" style={{ marginBottom: 10 }}>
+                <span className="meta-chip">
+                  Geschätzte Größe <strong>{formatBytes(scanReport.estimated_backup_bytes)}</strong>
+                </span>
+                <span className="meta-chip">
+                  Dateien {scanReport.included?.files ?? 0} · DB {formatBytes(scanReport.db_bytes)}
+                </span>
+                <span className="meta-chip">
+                  Ausgeschlossen {scanReport.excluded?.files ?? 0} ({formatBytes(scanReport.excluded?.bytes)})
+                </span>
+                <span className="meta-chip" title="Caches, Logs, Backups anderer Plugins – immer übersprungen">
+                  Auto übersprungen {formatBytes(scanReport.auto_skipped?.bytes)}
+                </span>
+              </div>
+
+              {(scanReport.top_files || []).length > 0 && (
+                <>
+                  <p className="muted" style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
+                    Größte Dateien – Haken setzen = vom Backup ausschließen
+                    (Dateien über {scanReport.settings?.max_file_mb || 0} MB sind vorausgewählt):
+                  </p>
+                  <table className="table" style={{ marginBottom: 10 }}>
+                    <thead><tr><th></th><th>Datei</th><th>Größe</th></tr></thead>
+                    <tbody>
+                      {(scanReport.top_files || []).map((f) => (
+                        <tr key={f.path}>
+                          <td style={{ width: 30 }}>
+                            <input
+                              type="checkbox"
+                              checked={scanExcludes.has(f.path)}
+                              onChange={() =>
+                                setScanExcludes((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(f.path)) next.delete(f.path);
+                                  else next.add(f.path);
+                                  return next;
+                                })
+                              }
+                            />
+                          </td>
+                          <td className="cell-sub" style={{ wordBreak: "break-all" }}>{f.path}</td>
+                          <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                            {formatBytes(f.size_bytes)}
+                            {f.status === "too_large" && <span className="badge warn" style={{ marginLeft: 6 }}>über Limit</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+
+              {(scanReport.auto_skipped?.groups || []).length > 0 && (
+                <p className="muted" style={{ margin: "0 0 10px", fontSize: "0.8rem" }}>
+                  Automatisch übersprungen:{" "}
+                  {(scanReport.auto_skipped?.groups || [])
+                    .map((g) => `${g.path} (${formatBytes(g.size_bytes)})`)
+                    .join(" · ")}
+                </p>
+              )}
+
+              <div className="row" style={{ alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={saveScanSettings}
+                    onChange={(e) => setSaveScanSettings(e.target.checked)}
+                  />
+                  Ausschlüsse dauerhaft merken (gilt auch für automatische Backups)
+                </label>
+                <button
+                  className="btn sm"
+                  disabled={busy}
+                  type="button"
+                  onClick={() =>
+                    run("backup_full", {
+                      label: "manual-full",
+                      excludes: [...scanExcludes],
+                      save_settings: saveScanSettings,
+                    })
+                  }
+                >
+                  Full Backup mit dieser Auswahl ({scanExcludes.size} ausgeschlossen)
+                </button>
+              </div>
+            </div>
+          )}
+
           <table className="table">
             <thead><tr><th>Backup</th><th>Typ</th><th>Größe</th><th></th></tr></thead>
             <tbody>
@@ -987,7 +1132,14 @@ export default function SiteDetailPage() {
                     <div className="cell-title">{b.id}</div>
                     <div className="cell-sub">{new Date(b.created_at).toLocaleString("de-DE")} · {b.label || "–"}</div>
                   </td>
-                  <td><span className="badge">{b.type}</span></td>
+                  <td>
+                    <span className="badge">{b.type}</span>{" "}
+                    {b.offsite ? (
+                      <span className="badge completed" title="Archiv liegt sicher auf dem WWC-Server">WWC-Server</span>
+                    ) : (
+                      <span className="badge warn" title="Archiv liegt nur auf dem WordPress-Server">nur lokal</span>
+                    )}
+                  </td>
                   <td className="muted">{formatBytes(b.size_bytes)}</td>
                   <td>
                     <div className="action-menu">

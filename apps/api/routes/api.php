@@ -41,6 +41,12 @@ Route::prefix('agent')->middleware(VerifyAgentHmac::class)->group(function () {
     Route::post('events', [AgentIngressController::class, 'events']);
     Route::post('jobs/{jobId}/progress', [AgentIngressController::class, 'jobProgress']);
     Route::post('jobs/{jobId}/result', [AgentIngressController::class, 'jobResult']);
+    // Off-site backup storage on the WWC server
+    Route::post('backups/init', [\App\Http\Controllers\Api\AgentBackupController::class, 'init']);
+    Route::post('backups/chunk', [\App\Http\Controllers\Api\AgentBackupController::class, 'chunk']);
+    Route::post('backups/complete', [\App\Http\Controllers\Api\AgentBackupController::class, 'complete']);
+    Route::get('backups/download', [\App\Http\Controllers\Api\AgentBackupController::class, 'download']);
+    Route::post('backups/delete', [\App\Http\Controllers\Api\AgentBackupController::class, 'delete']);
 });
 
 Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(function () {

@@ -10,6 +10,7 @@ class JobProgress
     private const EXPECTED_SECONDS = [
         'backup_full' => 240,
         'backup_incremental' => 90,
+        'backup_scan' => 45,
         'restore_backup' => 300,
         'staging_create' => 360,
         'staging_destroy' => 60,
@@ -29,8 +30,9 @@ class JobProgress
     public static function forJob(AgentJob $job): array
     {
         $labelMap = [
-            'backup_full' => 'Full-Backup',
-            'backup_incremental' => 'Inkrementelles Backup',
+        'backup_full' => 'Full-Backup',
+        'backup_incremental' => 'Inkrementelles Backup',
+        'backup_scan' => 'Backup-Analyse',
             'staging_create' => 'Development-Umgebung',
             'staging_destroy' => 'Staging löschen',
             'staging_promote' => 'Promote to Live',

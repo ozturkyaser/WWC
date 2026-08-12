@@ -156,6 +156,7 @@ class SiteController extends Controller
         $site = Site::where('organization_id', $orgId)->findOrFail($id);
         $remote = $purge->purgeRemoteSite($site);
         $pairing->disconnect($site);
+        app(\App\Services\BackupStorageService::class)->deleteAllForSite($site);
         AuditLogger::log('site.deleted', $orgId, $request->user(), $site->id, [
             'remote' => $remote,
         ], $request);

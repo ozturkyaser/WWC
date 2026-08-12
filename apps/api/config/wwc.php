@@ -1,13 +1,16 @@
 <?php
 
 return [
-    'agent_version' => env('WWC_AGENT_VERSION', '0.3.3'),
+    'agent_version' => env('WWC_AGENT_VERSION', '0.4.2'),
     'agent_update_public_key' => env('WWC_AGENT_UPDATE_PUBLIC_KEY'),
     // Public URL WordPress sites should use (LAN IP recommended for local WP/VMs)
     'public_api_url' => env('WWC_PUBLIC_API_URL', env('APP_URL', 'http://localhost:8081')),
     // Portal base used to build staging subdomains: {slug}.dev.{portal-host}
     'portal_url' => env('WWC_PORTAL_URL', 'http://localhost:3000'),
     'staging_subdomain_suffix' => env('WWC_STAGING_SUBDOMAIN_SUFFIX', 'dev'),
+
+    // Off-site backups: how many stored full backups to keep per site on the WWC server
+    'backups_keep_per_site' => (int) env('WWC_BACKUPS_KEEP_PER_SITE', 5),
 
     // Optional: OpenAI-compatible API for Impressum-Extraktion
     'ai_api_key' => env('WWC_AI_API_KEY', env('OPENAI_API_KEY')),

@@ -25,6 +25,7 @@ class ProjectPurgeService
         foreach ($project->sites as $site) {
             $remote[$site->id] = $this->purgeRemoteSite($site);
             $this->pairing->disconnect($site);
+            app(BackupStorageService::class)->deleteAllForSite($site);
             $site->delete();
         }
 

@@ -20,6 +20,31 @@ class BackupController extends Controller
         $orgId = $request->attributes->get('organization_id');
         $site = Site::where('organization_id', $orgId)->findOrFail($siteId);
 
+        // Prefer the copy stored on the WWC server (off-site backup)
+        $storage = app(\App\Services\BackupStorageService::class);
+        $stored = \App\Models\SiteBackup::query()
+            ->where('site_id', $site->id)
+            ->where('status', 'stored')
+            ->when(
+                $backupId === 'latest-full',
+                fn ($q) => $q->where('type', 'full')->orderByDesc('backup_created_at'),
+                fn ($q) => $q->where('backup_id', $storage->sanitizeId($backupId))
+            )
+            ->first();
+
+        if ($stored && is_file((string) $stored->storage_path)) {
+            AuditLogger::log('backup.downloaded', $orgId, $request->user(), $site->id, [
+                'backup_id' => $stored->backup_id,
+                'source' => 'server',
+            ], $request);
+
+            return response()->download($stored->storage_path, $stored->backup_id.'.zip', [
+                'Content-Type' => 'application/zip',
+                'X-WWC-Backup-Id' => $stored->backup_id,
+            ]);
+        }
+
+        // Fallback: fetch directly from the agent (legacy/local-only backups)
         if (! $site->getHmacSecret()) {
             return response()->json(['message' => 'Site ist nicht verbunden'], 422);
         }

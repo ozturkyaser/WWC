@@ -26,7 +26,13 @@ final class WWC_Agent_Backup
             }
             $dir = dirname($manifestFile);
             $json['path'] = $dir;
-            $json['size_bytes'] = self::dir_size($dir);
+            // Off-site backups keep only manifest.json locally – size comes from the manifest
+            if (empty($json['offsite']) || empty($json['size_bytes'])) {
+                $json['size_bytes'] = self::dir_size($dir);
+            }
+            $json['offsite'] = ! empty($json['offsite']);
+            // File map is huge and only needed on disk (incremental diffs) – not in listings
+            unset($json['files']);
             $items[] = $json;
         }
         usort($items, static fn ($a, $b) => strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? '')));
@@ -34,7 +40,168 @@ final class WWC_Agent_Backup
         return ['ok' => true, 'backups' => $items];
     }
 
-    public static function create_full(string $label = 'manual'): array
+    /**
+     * Backup exclusion settings: defaults ← saved option ← per-job overrides.
+     *
+     * @return array{max_file_bytes:int, excludes:list<string>}
+     */
+    public static function settings(array $overrides = []): array
+    {
+        $defaults = [
+            'max_file_mb' => 100, // skip single files larger than this (0 = unlimited)
+            'excludes' => [],     // additional relative path prefixes, e.g. "wp-content/uploads/videos/"
+        ];
+        $saved = get_option('wwc_agent_backup_settings');
+        $merged = array_merge($defaults, is_array($saved) ? $saved : [], $overrides);
+
+        $maxMb = max(0, (int) ($merged['max_file_mb'] ?? 0));
+        $excludes = [];
+        foreach ((array) ($merged['excludes'] ?? []) as $entry) {
+            // Entries may be directories or single files (relative to WP root)
+            $entry = strtolower(trim(str_replace('\\', '/', (string) $entry), '/ '));
+            if ($entry !== '') {
+                $excludes[] = $entry;
+            }
+        }
+
+        return apply_filters('wwc_agent_backup_settings', [
+            'max_file_bytes' => $maxMb * 1024 * 1024,
+            'excludes' => $excludes,
+        ]);
+    }
+
+    /**
+     * Pre-backup analysis: scans the whole install and reports what a backup
+     * would contain, the largest files/directories and what gets skipped –
+     * so exclusions can be chosen in the portal before running the backup.
+     */
+    public static function scan(array $options = []): array
+    {
+        @set_time_limit(600);
+        $settings = self::settings($options);
+        $maxBytes = (int) $settings['max_file_bytes'];
+        $excludes = (array) $settings['excludes'];
+
+        WWC_Agent_Job_Progress::report(5, 'Backup-Analyse: Dateien scannen…', true);
+
+        $includedBytes = 0;
+        $includedFiles = 0;
+        $excludedBytes = 0;
+        $excludedFiles = 0;
+        $autoBytes = 0;
+        $autoFiles = 0;
+        $autoGroups = [];
+        $topFiles = [];
+        $dirSizes = [];
+        $scanned = 0;
+
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(ABSPATH, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $file) {
+            /** @var SplFileInfo $file */
+            if (! $file->isFile()) {
+                continue;
+            }
+            $absolute = $file->getRealPath();
+            if ($absolute === false) {
+                continue;
+            }
+            $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen(rtrim(ABSPATH, '/\\')))), '/');
+            $size = (int) $file->getSize();
+            $scanned++;
+            if ($scanned % 800 === 0) {
+                WWC_Agent_Job_Progress::report(min(85, 5 + (int) floor($scanned / 400)), 'Analyse… '.$scanned.' Dateien');
+            }
+
+            if (self::should_skip($rel)) {
+                $autoFiles++;
+                $autoBytes += $size;
+                $parts = explode('/', $rel);
+                $group = implode('/', array_slice($parts, 0, min(2, count($parts) - 1))) ?: $parts[0];
+                $autoGroups[$group] = ($autoGroups[$group] ?? 0) + $size;
+                continue;
+            }
+
+            $relLower = strtolower($rel);
+            $status = 'included';
+            foreach ($excludes as $entry) {
+                if ($relLower === $entry || str_starts_with($relLower, $entry.'/')) {
+                    $status = 'excluded';
+                    break;
+                }
+            }
+            if ($status === 'included' && $maxBytes > 0 && $size > $maxBytes) {
+                $status = 'too_large';
+            }
+
+            if ($status === 'included') {
+                $includedFiles++;
+                $includedBytes += $size;
+            } else {
+                $excludedFiles++;
+                $excludedBytes += $size;
+            }
+
+            // Track top files (everything above 1 MB is a candidate)
+            if ($size >= 1024 * 1024) {
+                $topFiles[] = ['path' => $rel, 'size_bytes' => $size, 'status' => $status];
+            }
+
+            $parts = explode('/', $rel);
+            if (count($parts) > 1) {
+                $dir = implode('/', array_slice($parts, 0, min(3, count($parts) - 1)));
+                $dirSizes[$dir] = ($dirSizes[$dir] ?? 0) + $size;
+            }
+        }
+
+        usort($topFiles, static fn ($a, $b) => $b['size_bytes'] <=> $a['size_bytes']);
+        $topFiles = array_slice($topFiles, 0, 30);
+
+        arsort($dirSizes);
+        $topDirs = [];
+        foreach (array_slice($dirSizes, 0, 12, true) as $dir => $bytes) {
+            $topDirs[] = ['path' => $dir, 'size_bytes' => $bytes];
+        }
+
+        arsort($autoGroups);
+        $autoList = [];
+        foreach (array_slice($autoGroups, 0, 8, true) as $group => $bytes) {
+            $autoList[] = ['path' => $group, 'size_bytes' => $bytes];
+        }
+
+        // Rough DB size for the estimate
+        global $wpdb;
+        $dbBytes = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = %s',
+            defined('DB_NAME') ? DB_NAME : ''
+        ));
+
+        WWC_Agent_Job_Progress::report(96, sprintf(
+            'Analyse fertig: %s Backup-Größe (%d Dateien), %s ausgeschlossen',
+            self::format_bytes($includedBytes + $dbBytes),
+            $includedFiles,
+            self::format_bytes($excludedBytes)
+        ), true);
+
+        return [
+            'ok' => true,
+            'scanned_at' => gmdate('c'),
+            'included' => ['files' => $includedFiles, 'bytes' => $includedBytes],
+            'excluded' => ['files' => $excludedFiles, 'bytes' => $excludedBytes],
+            'auto_skipped' => ['files' => $autoFiles, 'bytes' => $autoBytes, 'groups' => $autoList],
+            'db_bytes' => $dbBytes,
+            'estimated_backup_bytes' => $includedBytes + $dbBytes,
+            'top_files' => $topFiles,
+            'top_dirs' => $topDirs,
+            'settings' => [
+                'max_file_mb' => $maxBytes > 0 ? (int) round($maxBytes / (1024 * 1024)) : 0,
+                'excludes' => $excludes,
+            ],
+        ];
+    }
+
+    public static function create_full(string $label = 'manual', array $options = []): array
     {
         @set_time_limit(600);
         @ini_set('memory_limit', '512M');
@@ -63,9 +230,19 @@ final class WWC_Agent_Backup
         );
 
         WWC_Agent_Job_Progress::report(32, 'Dateien scannen…', true);
-        $fileMap = self::build_file_map();
+        $settings = self::settings($options);
+        $skipped = ['count' => 0, 'bytes' => 0, 'samples' => []];
+        $fileMap = self::build_file_map($settings, $skipped);
         $fileCount = count($fileMap);
         WWC_Agent_Job_Progress::log($fileCount.' Dateien erfasst', 48, true);
+        if ($skipped['count'] > 0) {
+            WWC_Agent_Job_Progress::log(sprintf(
+                '%d Datei(en) ausgeschlossen (%s gespart): %s',
+                $skipped['count'],
+                self::format_bytes((int) $skipped['bytes']),
+                implode(', ', array_slice($skipped['samples'], 0, 5)).($skipped['count'] > 5 ? ', …' : '')
+            ));
+        }
 
         WWC_Agent_Job_Progress::report(50, 'Dateien in ZIP packen…', true);
         $zip = self::zip_paths($filesZip, array_keys($fileMap), ABSPATH, 50, 86);
@@ -93,10 +270,22 @@ final class WWC_Agent_Backup
             'files' => $fileMap,
             'database' => 'database.sql',
             'archive' => 'files.zip',
+            'skipped' => ['count' => $skipped['count'], 'bytes' => $skipped['bytes']],
+            'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
         ];
         file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
+        $sizeBytes = self::dir_size($dir);
 
         WWC_Agent_Event_Queue::push('backup_created', 'Full backup '.$id, 'info', ['id' => $id, 'type' => 'full']);
+
+        $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
+        if (! ($offsite['ok'] ?? false)) {
+            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'), 96, true);
+            WWC_Agent_Event_Queue::push('backup_offsite_failed', 'Off-site upload failed for '.$id, 'warning', [
+                'id' => $id,
+                'error' => $offsite['error'] ?? null,
+            ]);
+        }
         WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt', true);
 
         return [
@@ -106,13 +295,14 @@ final class WWC_Agent_Backup
                 'type' => 'full',
                 'label' => $label,
                 'created_at' => $manifest['created_at'],
-                'size_bytes' => self::dir_size($dir),
+                'size_bytes' => $sizeBytes,
                 'file_count' => $fileCount,
+                'offsite' => (bool) ($offsite['ok'] ?? false),
             ],
         ];
     }
 
-    public static function create_incremental(string $label = 'auto'): array
+    public static function create_incremental(string $label = 'auto', array $options = []): array
     {
         $list = self::list();
         $parent = null;
@@ -123,13 +313,13 @@ final class WWC_Agent_Backup
             }
         }
         if (! $parent) {
-            return self::create_full($label.'-full-base');
+            return self::create_full($label.'-full-base', $options);
         }
 
         @set_time_limit(600);
         $parentManifest = json_decode((string) file_get_contents(self::root().'/'.$parent['id'].'/manifest.json'), true);
         $oldFiles = is_array($parentManifest['files'] ?? null) ? $parentManifest['files'] : [];
-        $current = self::build_file_map();
+        $current = self::build_file_map(self::settings($options));
         $changed = [];
         foreach ($current as $rel => $meta) {
             if (! isset($oldFiles[$rel]) || ($oldFiles[$rel]['hash'] ?? '') !== ($meta['hash'] ?? '')) {
@@ -175,7 +365,13 @@ final class WWC_Agent_Backup
             'archive' => file_exists($filesZip) ? 'files.zip' : null,
         ];
         file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
+        $sizeBytes = self::dir_size($dir);
         WWC_Agent_Event_Queue::push('backup_created', 'Incremental backup '.$id, 'info', ['id' => $id, 'type' => 'incremental']);
+
+        $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
+        if (! ($offsite['ok'] ?? false)) {
+            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'));
+        }
 
         return [
             'ok' => true,
@@ -185,8 +381,9 @@ final class WWC_Agent_Backup
                 'label' => $label,
                 'parent_id' => $parent['id'],
                 'created_at' => $manifest['created_at'],
-                'size_bytes' => self::dir_size($dir),
+                'size_bytes' => $sizeBytes,
                 'file_count' => count($changed),
+                'offsite' => (bool) ($offsite['ok'] ?? false),
             ],
         ];
     }
@@ -255,6 +452,7 @@ final class WWC_Agent_Backup
             return ['ok' => false, 'error' => 'Backup not found'];
         }
         self::rrmdir($dir);
+        WWC_Agent_Backup_Uploader::delete_remote($backupId);
         WWC_Agent_Event_Queue::push('backup_deleted', 'Backup '.$backupId.' deleted', 'info', ['id' => $backupId]);
 
         return ['ok' => true, 'deleted' => $backupId];
@@ -269,6 +467,7 @@ final class WWC_Agent_Backup
                 continue;
             }
             self::rrmdir(self::root().'/'.$id);
+            WWC_Agent_Backup_Uploader::delete_remote($id);
             $deleted[] = $id;
         }
 
@@ -329,6 +528,14 @@ final class WWC_Agent_Backup
             $chain = [$parent, $manifest];
         }
 
+        // Off-site backups: fetch payload files back from the WWC server first
+        foreach ($chain as $step) {
+            $local = WWC_Agent_Backup_Uploader::ensure_local((string) $step['id']);
+            if (! ($local['ok'] ?? false)) {
+                return ['ok' => false, 'error' => 'Backup nicht verfügbar: '.($local['error'] ?? $step['id'])];
+            }
+        }
+
         foreach ($chain as $step) {
             $dir = self::root().'/'.$step['id'];
             if (! empty($step['archive']) && file_exists($dir.'/'.$step['archive'])) {
@@ -353,8 +560,11 @@ final class WWC_Agent_Backup
     }
 
     /** @return array<string, array{hash:string,mtime:int,size:int}> */
-    private static function build_file_map(): array
+    private static function build_file_map(array $settings = [], ?array &$skipped = null): array
     {
+        $maxBytes = (int) ($settings['max_file_bytes'] ?? 0);
+        $excludes = (array) ($settings['excludes'] ?? []);
+
         $map = [];
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator(ABSPATH, FilesystemIterator::SKIP_DOTS)
@@ -374,6 +584,30 @@ final class WWC_Agent_Backup
                 continue;
             }
             $size = (int) $file->getSize();
+
+            // Custom excludes + per-file size cap keep backups slim
+            $skipReason = null;
+            $relLower = strtolower($rel);
+            foreach ($excludes as $entry) {
+                if ($relLower === $entry || str_starts_with($relLower, $entry.'/')) {
+                    $skipReason = 'exclude';
+                    break;
+                }
+            }
+            if ($skipReason === null && $maxBytes > 0 && $size > $maxBytes) {
+                $skipReason = 'size';
+            }
+            if ($skipReason !== null) {
+                if ($skipped !== null) {
+                    $skipped['count']++;
+                    $skipped['bytes'] += $size;
+                    if (count($skipped['samples']) < 10) {
+                        $skipped['samples'][] = $rel.' ('.self::format_bytes($size).')';
+                    }
+                }
+                continue;
+            }
+
             $hash = $size > 20 * 1024 * 1024
                 ? 'size:'.$size.':mtime:'.$file->getMTime()
                 : (md5_file($absolute) ?: ('mtime:'.$file->getMTime()));
@@ -396,11 +630,28 @@ final class WWC_Agent_Backup
     {
         $rel = strtolower($rel);
         $skipPrefixes = [
+            // WWC-managed data
             'wp-content/wwc-backups/',
             'wp-content/wwc-staging/',
+            // Caches / temp
             'wp-content/cache/',
             'wp-content/upgrade/',
+            'wp-content/et-cache/',
+            'wp-content/litespeed/',
+            'wp-content/wp-rocket-config/',
             'wp-content/uploads/wc-logs/',
+            // Backups anderer Plugins (sonst wachsen Backups exponentiell)
+            'wp-content/updraft/',
+            'wp-content/ai1wm-backups/',
+            'wp-content/backups-dup-pro/',
+            'wp-content/backups-dup-lite/',
+            'wp-content/wpvividbackups/',
+            'wp-content/backuply/',
+            'wp-content/backup-db/',
+            'wp-content/backupbuddy_backups/',
+            'wp-content/uploads/backwpup-',
+            'wp-content/uploads/wp-staging/',
+            // Entwicklung
             '.git/',
             'node_modules/',
         ];
@@ -408,6 +659,11 @@ final class WWC_Agent_Backup
             if (str_starts_with($rel, $prefix)) {
                 return true;
             }
+        }
+
+        // Backup-Archive anderer Tools im Root/wp-content
+        if (str_ends_with($rel, '.wpress')) {
+            return true;
         }
 
         return str_ends_with($rel, '.log') || str_ends_with($rel, '.tmp');

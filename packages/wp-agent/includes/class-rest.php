@@ -151,7 +151,7 @@ final class WWC_Agent_Rest
 
         $allowed = [
             'ping', 'inventory', 'update_plugin', 'update_theme', 'update_core', 'run_scan', 'self_update',
-            'backup_full', 'backup_incremental', 'restore_backup', 'list_backups',
+            'backup_full', 'backup_incremental', 'backup_scan', 'restore_backup', 'list_backups',
             'delete_backup', 'purge_wwc',
             'staging_create', 'staging_destroy', 'staging_status', 'staging_grant_admin',
             'staging_update_plugin', 'staging_update_theme', 'update_batch', 'staging_promote',

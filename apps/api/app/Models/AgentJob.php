@@ -20,6 +20,7 @@ class AgentJob extends Model
         'self_update',
         'backup_full',
         'backup_incremental',
+        'backup_scan',
         'restore_backup',
         'list_backups',
         'delete_backup',

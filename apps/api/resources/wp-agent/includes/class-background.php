@@ -24,6 +24,7 @@ final class WWC_Agent_Background
             'inventory',
             'backup_full',
             'backup_incremental',
+            'backup_scan',
             'restore_backup',
             'staging_create',
             'staging_destroy',
@@ -180,6 +181,26 @@ final class WWC_Agent_Background
         }
     }
 
+    /** Only pass whitelisted backup tuning keys from the job payload. */
+    private static function backup_options(array $payload): array
+    {
+        $options = [];
+        if (isset($payload['max_file_mb'])) {
+            $options['max_file_mb'] = max(0, (int) $payload['max_file_mb']);
+        }
+        if (is_array($payload['excludes'] ?? null)) {
+            $options['excludes'] = array_values(array_filter(array_map('strval', $payload['excludes'])));
+        }
+
+        // Persist as site default so automatic backups (pre-staging etc.) use it too
+        if (! empty($payload['save_settings']) && $options !== []) {
+            $saved = get_option('wwc_agent_backup_settings');
+            update_option('wwc_agent_backup_settings', array_merge(is_array($saved) ? $saved : [], $options), false);
+        }
+
+        return $options;
+    }
+
     private static function run_item(array $item): void
     {
         $command = (string) ($item['command'] ?? '');
@@ -205,8 +226,9 @@ final class WWC_Agent_Background
                 'update_core' => WWC_Agent_Updater::update_core(),
                 'run_scan' => WWC_Agent_Scanner::run(),
                 'self_update' => WWC_Agent_Self_Updater::apply($payload),
-                'backup_full' => WWC_Agent_Backup::create_full((string) ($payload['label'] ?? 'manual')),
-                'backup_incremental' => WWC_Agent_Backup::create_incremental((string) ($payload['label'] ?? 'auto')),
+                'backup_full' => WWC_Agent_Backup::create_full((string) ($payload['label'] ?? 'manual'), self::backup_options($payload)),
+                'backup_incremental' => WWC_Agent_Backup::create_incremental((string) ($payload['label'] ?? 'auto'), self::backup_options($payload)),
+                'backup_scan' => WWC_Agent_Backup::scan(self::backup_options($payload)),
                 'restore_backup' => WWC_Agent_Backup::restore((string) ($payload['backup_id'] ?? '')),
                 'list_backups' => WWC_Agent_Backup::list(),
                 'staging_create' => WWC_Agent_Staging::create(($payload['with_backup'] ?? true) !== false),
