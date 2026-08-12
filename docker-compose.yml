@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wwc
+      POSTGRES_USER: wwc
+      POSTGRES_PASSWORD: wwc_secret
+    ports:
+      - "5434:5432"
+    volumes:
+      - wwc_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wwc -d wwc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  # Local WordPress for pairing tests (same Docker network as api)
+  wordpress:
+    image: wordpress:php8.3-apache
+    ports:
+      - "8088:80"
+    environment:
+      WORDPRESS_DB_HOST: wordpress-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - wwc_wp:/var/www/html
+      - ./packages/wp-agent:/var/www/html/wp-content/plugins/wwc-agent
+    depends_on:
+      - wordpress-db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  wordpress-db:
+    image: mariadb:11
+    environment:
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: wordpress
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - wwc_wp_db:/var/lib/mysql
+
+volumes:
+  wwc_pg:
+  wwc_wp:
+  wwc_wp_db:

@@ -1,0 +1,12 @@
+{
+  "name": "wwc",
+  "private": true,
+  "scripts": {
+    "portal:dev": "npm --prefix apps/portal run dev",
+    "portal:build": "npm --prefix apps/portal run build",
+    "api:serve": "docker run --rm -it -v \"$PWD/apps/api:/app\" -w /app -p 8080:8080 php:8.4-cli php artisan serve --host=0.0.0.0 --port=8080",
+    "api:migrate": "docker run --rm -v \"$PWD/apps/api:/app\" -w /app php:8.4-cli php artisan migrate --force",
+    "infra:up": "docker compose up -d postgres redis mailpit",
+    "tunnel": "bash scripts/start-tunnel.sh"
+  }
+}
