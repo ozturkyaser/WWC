@@ -69,6 +69,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::put('/sites/{id}/maintenance', [MaintenanceController::class, 'updateSettings']);
     Route::post('/sites/{id}/maintenance/run', [MaintenanceController::class, 'run']);
     Route::post('/sites/{id}/maintenance/runs/{runId}/execute', [MaintenanceController::class, 'executePlan']);
+    Route::put('/sites/{id}/backup-schedule', [SiteController::class, 'updateBackupSchedule']);
     Route::get('/sites/{siteId}/backups/latest/download', [BackupController::class, 'downloadLatest']);
     Route::get('/sites/{siteId}/backups/{backupId}/download', [BackupController::class, 'download']);
     Route::get('/staging/{slug}', [StagingController::class, 'showBySlug']);

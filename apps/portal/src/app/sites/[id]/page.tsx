@@ -18,6 +18,24 @@ type Backup = {
   offsite?: boolean;
 };
 
+type ServerBackup = {
+  id: string;
+  backup_id: string;
+  type: string;
+  label?: string | null;
+  status: string;
+  size_bytes?: number;
+  backup_created_at?: string | null;
+  uploaded_at?: string | null;
+};
+
+type BackupSchedule = {
+  enabled?: boolean;
+  time?: string;
+  weekly_full_day?: number;
+  incremental_daily?: boolean;
+};
+
 type Staging = {
   exists: boolean;
   url?: string | null;
@@ -72,7 +90,9 @@ type SiteDetail = {
       core?: { version: string; update_available?: string };
     };
     health?: { backups?: Backup[]; staging?: Staging };
+    backup_schedule?: BackupSchedule | null;
   };
+  server_backups?: ServerBackup[];
   staging_portal?: StagingPortal;
   events: Array<{ id: string; type: string; title: string; severity: string; occurred_at: string }>;
   jobs: JobRow[];
@@ -253,6 +273,25 @@ export default function SiteDetailPage() {
     setSelectedUpdates(new Set());
   }
 
+  async function saveBackupSchedule(patch: BackupSchedule) {
+    setBusy(true);
+    try {
+      const current = detail?.data?.backup_schedule || {};
+      const res = await api<{ data: SiteDetail["data"] }>(`/sites/${params.id}/backup-schedule`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: current.enabled ?? false, ...current, ...patch }),
+      });
+      setDetail((d) => (d ? { ...d, data: res.data } : d));
+      setMsgTone("ok");
+      setMsg("Backup-Zeitplan gespeichert");
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveMaintenance(patch: Record<string, unknown>) {
     setMaintBusy(true);
     try {
@@ -342,7 +381,29 @@ export default function SiteDetailPage() {
   const stagingPortal = detail.staging_portal;
   const plugins = site.inventory?.plugins || [];
   const themes = site.inventory?.themes || [];
-  const backups = site.health?.backups || [];
+  // Backups: Server-Datenbank (site_backups) ist die verlaessliche Quelle,
+  // Agent-Heartbeat liefert Zusatzinfos und rein lokale Backups.
+  const agentBackups = site.health?.backups || [];
+  const serverBackups = detail.server_backups || [];
+  const backups: Backup[] = (() => {
+    const byId = new Map<string, Backup>();
+    for (const sb of serverBackups) {
+      if (sb.status !== "stored") continue;
+      byId.set(sb.backup_id, {
+        id: sb.backup_id,
+        type: sb.type,
+        label: sb.label || undefined,
+        created_at: sb.backup_created_at || sb.uploaded_at || "",
+        size_bytes: sb.size_bytes,
+        offsite: true,
+      });
+    }
+    for (const b of agentBackups) {
+      const existing = byId.get(b.id);
+      byId.set(b.id, { ...b, offsite: b.offsite || Boolean(existing?.offsite) });
+    }
+    return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  })();
   const staging = site.health?.staging;
   const updates =
     (site.inventory?.core?.update_available ? 1 : 0) +
@@ -983,6 +1044,63 @@ export default function SiteDetailPage() {
 
       {tab === "backups" && (
         <div className="surface surface-pad">
+          <div className="surface surface-pad" style={{ marginBottom: 16, background: "rgba(0,0,0,0.18)" }}>
+            <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>Automatischer Backup-Zeitplan</h4>
+            <div className="row" style={{ alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                <input
+                  type="checkbox"
+                  disabled={busy}
+                  checked={Boolean(site.backup_schedule?.enabled)}
+                  onChange={(e) => saveBackupSchedule({ enabled: e.target.checked })}
+                />
+                Aktiv
+              </label>
+              <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                Uhrzeit
+                <input
+                  type="time"
+                  disabled={busy}
+                  defaultValue={site.backup_schedule?.time || "02:30"}
+                  onBlur={(e) => {
+                    if (e.target.value && e.target.value !== site.backup_schedule?.time) {
+                      saveBackupSchedule({ time: e.target.value });
+                    }
+                  }}
+                  style={{ width: 90 }}
+                />
+              </label>
+              <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                Voll-Backup am
+                <select
+                  disabled={busy}
+                  value={site.backup_schedule?.weekly_full_day ?? 0}
+                  onChange={(e) => saveBackupSchedule({ weekly_full_day: Number(e.target.value) })}
+                >
+                  {["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"].map(
+                    (d, i) => (
+                      <option key={d} value={i}>{d}</option>
+                    )
+                  )}
+                </select>
+              </label>
+              <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                <input
+                  type="checkbox"
+                  disabled={busy}
+                  checked={site.backup_schedule?.incremental_daily ?? true}
+                  onChange={(e) => saveBackupSchedule({ incremental_daily: e.target.checked })}
+                />
+                An den übrigen Tagen inkrementell
+              </label>
+            </div>
+            <p className="muted" style={{ margin: "8px 0 0", fontSize: "0.8rem" }}>
+              Backups laufen nachts leicht versetzt, werden auf den WWC-Server übertragen und
+              belasten den Kundenserver nicht doppelt. Gespeicherte Ausschlüsse aus der
+              Backup-Analyse gelten auch hier.
+            </p>
+          </div>
+
           <div className="row" style={{ marginBottom: 14 }}>
             <button className="btn secondary" disabled={busy} type="button" onClick={() => run("backup_scan", {})}>
               Analyse vor Backup

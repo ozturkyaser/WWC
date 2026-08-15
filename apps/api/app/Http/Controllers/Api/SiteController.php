@@ -95,6 +95,11 @@ class SiteController extends Controller
         $latestAgent = $packager->version();
         $currentAgent = (string) ($site->agent_version ?: '0.0.0');
 
+        $serverBackups = $site->serverBackups()
+            ->orderByDesc('backup_created_at')
+            ->limit(30)
+            ->get(['id', 'backup_id', 'type', 'label', 'status', 'size_bytes', 'wp_version', 'file_count', 'parent_backup_id', 'backup_created_at', 'uploaded_at']);
+
         return response()->json([
             'data' => $site,
             'staging_portal' => $staging->toPortalPayload($site),
@@ -107,7 +112,32 @@ class SiteController extends Controller
                 'update_available' => version_compare($currentAgent, $latestAgent, '<'),
             ],
             'maintenance' => $maintenance->payloadForSite($site),
+            'server_backups' => $serverBackups,
         ]);
+    }
+
+    public function updateBackupSchedule(Request $request, string $id)
+    {
+        $orgId = $request->attributes->get('organization_id');
+        $site = Site::where('organization_id', $orgId)->findOrFail($id);
+
+        $data = $request->validate([
+            'enabled' => 'required|boolean',
+            'time' => 'sometimes|string|regex:/^\d{2}:\d{2}$/',
+            'weekly_full_day' => 'sometimes|integer|min:0|max:6',
+            'incremental_daily' => 'sometimes|boolean',
+        ]);
+
+        $schedule = array_merge([
+            'time' => '02:30',
+            'weekly_full_day' => 0,
+            'incremental_daily' => true,
+        ], $site->backup_schedule ?? [], $data);
+
+        $site->update(['backup_schedule' => $schedule]);
+        AuditLogger::log('site.backup_schedule', $orgId, $request->user(), $site->id, $schedule, $request);
+
+        return response()->json(['data' => $site->fresh()]);
     }
 
     public function pairingCode(Request $request, string $id, PairingService $pairing)

@@ -22,6 +22,7 @@ class Site extends Model
         'onboarding_status', 'onboarding_meta',
         'maintenance_agent_enabled', 'maintenance_cadence', 'maintenance_auto_apply',
         'maintenance_last_run_at', 'maintenance_next_run_at', 'maintenance_agent_meta',
+        'backup_schedule', 'backup_last_scheduled_at',
     ];
 
     protected $hidden = [
@@ -45,6 +46,8 @@ class Site extends Model
             'staging_ready_at' => 'datetime',
             'maintenance_last_run_at' => 'datetime',
             'maintenance_next_run_at' => 'datetime',
+            'backup_schedule' => 'array',
+            'backup_last_scheduled_at' => 'datetime',
         ];
     }
 
@@ -81,6 +84,11 @@ class Site extends Model
     public function maintenanceRuns(): HasMany
     {
         return $this->hasMany(MaintenanceRun::class);
+    }
+
+    public function serverBackups(): HasMany
+    {
+        return $this->hasMany(SiteBackup::class);
     }
 
     public function setHmacSecret(string $secret): void

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\AgentJob;
 use App\Models\Site;
 use App\Services\AlertService;
 use Illuminate\Console\Command;
@@ -36,6 +37,30 @@ class WwcCheckHeartbeatsCommand extends Command
 
         $this->info(sprintf('%d Site(s) als offline markiert.', $stale->count()));
 
+        $this->failStuckJobs();
+
         return self::SUCCESS;
+    }
+
+    /**
+     * Watchdog: Jobs, die sich seit ueber 90 Minuten nicht gemeldet haben,
+     * werden als fehlgeschlagen markiert, damit Wartungslaeufe und UI nicht
+     * ewig auf ein Ergebnis warten.
+     */
+    private function failStuckJobs(): void
+    {
+        $stuck = AgentJob::query()
+            ->whereIn('status', ['pending', 'running'])
+            ->where('updated_at', '<', now()->subMinutes(90))
+            ->get();
+
+        foreach ($stuck as $job) {
+            $job->update([
+                'status' => 'failed',
+                'error' => 'Zeitüberschreitung: keine Rückmeldung vom Agent (Watchdog)',
+                'finished_at' => now(),
+            ]);
+            $this->warn("Job {$job->id} ({$job->command}) als fehlgeschlagen markiert (Watchdog).");
+        }
     }
 }
