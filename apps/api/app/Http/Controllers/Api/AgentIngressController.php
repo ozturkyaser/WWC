@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Site;
 use App\Models\SiteEvent;
 use App\Models\VulnerabilityFinding;
+use App\Services\AlertService;
 use App\Services\AuditLogger;
 use App\Services\MaintenanceAgentService;
 use App\Services\PluginPackager;
@@ -58,6 +59,8 @@ class AgentIngressController extends Controller
             $health = $stagingPortal->stripSecretsFromHealth($health);
         }
 
+        $wasOffline = $site->status === 'offline';
+
         $site->fill([
             'status' => 'online',
             'last_seen_at' => now(),
@@ -67,6 +70,10 @@ class AgentIngressController extends Controller
             'health' => $health ?? $site->health,
             'inventory' => $data['inventory'] ?? $site->inventory,
         ])->save();
+
+        if ($wasOffline) {
+            app(AlertService::class)->siteBackOnline($site);
+        }
 
         foreach ($data['events'] ?? [] as $event) {
             SiteEvent::create([
@@ -266,6 +273,10 @@ class AgentIngressController extends Controller
             'status' => $data['status'],
         ]);
 
+        if ($data['status'] === 'failed' && ! $isDryRun) {
+            $this->alertOnFailedJob($site, $job->fresh(), $data['error'] ?? null);
+        }
+
         try {
             $maintenanceAgent->continueAfterJob($job->fresh());
         } catch (\Throwable $e) {
@@ -273,6 +284,38 @@ class AgentIngressController extends Controller
         }
 
         return response()->json(['ok' => true]);
+    }
+
+    private function alertOnFailedJob(Site $site, \App\Models\AgentJob $job, ?string $error): void
+    {
+        $labels = [
+            'backup_full' => 'Backup (voll)',
+            'backup_incremental' => 'Backup (inkrementell)',
+            'restore_backup' => 'Backup-Wiederherstellung',
+            'update_plugin' => 'Plugin-Update',
+            'update_theme' => 'Theme-Update',
+            'update_core' => 'WordPress-Core-Update',
+            'update_batch' => 'Sammel-Update',
+            'self_update' => 'Agent-Update',
+        ];
+        if (! isset($labels[$job->command])) {
+            return;
+        }
+
+        app(AlertService::class)->notify(
+            $site->organization,
+            'job_failed',
+            "{$labels[$job->command]} fehlgeschlagen: {$site->name}",
+            array_filter([
+                "Auf der Site \"{$site->name}\" ({$site->url}) ist ein Job fehlgeschlagen.",
+                "Vorgang: {$labels[$job->command]}",
+                $error ? "Fehler: {$error}" : null,
+            ]),
+            "/sites/{$site->id}",
+            'error',
+            "job_failed:{$job->id}",
+            $site
+        );
     }
 
     /**

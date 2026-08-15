@@ -12,6 +12,9 @@ return [
     // Off-site backups: how many stored full backups to keep per site on the WWC server
     'backups_keep_per_site' => (int) env('WWC_BACKUPS_KEEP_PER_SITE', 5),
 
+    // Nach wie vielen Minuten ohne Heartbeat eine Site als offline gilt
+    'offline_after_minutes' => (int) env('WWC_OFFLINE_AFTER_MINUTES', 15),
+
     // Optional: OpenAI-compatible API for Impressum-Extraktion
     'ai_api_key' => env('WWC_AI_API_KEY', env('OPENAI_API_KEY')),
     'ai_api_base' => env('WWC_AI_API_BASE', 'https://api.openai.com/v1'),

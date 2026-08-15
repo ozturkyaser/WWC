@@ -8,6 +8,8 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
+// Offline-Erkennung: Sites ohne aktuellen Heartbeat markieren + benachrichtigen
+Schedule::command('wwc:check-heartbeats')->everyFiveMinutes();
 Schedule::command('wwc:sync-patchstack --pages=100 --scan')->dailyAt('02:30');
 Schedule::command('wwc:scan-sites --skip-patchstack')->dailyAt('03:15');
 // Per-site Wartungs-KI: Audit (+ Dry-Run→Live wenn auto_apply)
