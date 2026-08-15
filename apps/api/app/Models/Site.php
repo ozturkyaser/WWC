@@ -22,7 +22,7 @@ class Site extends Model
         'onboarding_status', 'onboarding_meta',
         'maintenance_agent_enabled', 'maintenance_cadence', 'maintenance_auto_apply',
         'maintenance_last_run_at', 'maintenance_next_run_at', 'maintenance_agent_meta',
-        'backup_schedule', 'backup_last_scheduled_at',
+        'backup_schedule', 'backup_last_scheduled_at', 'dev_clone',
     ];
 
     protected $hidden = [
@@ -48,6 +48,7 @@ class Site extends Model
             'maintenance_next_run_at' => 'datetime',
             'backup_schedule' => 'array',
             'backup_last_scheduled_at' => 'datetime',
+            'dev_clone' => 'array',
         ];
     }
 

@@ -15,6 +15,15 @@ return [
     // Nach wie vielen Minuten ohne Heartbeat eine Site als offline gilt
     'offline_after_minutes' => (int) env('WWC_OFFLINE_AFTER_MINUTES', 15),
 
+    /*
+    | Dev-Clones: Kopien der Kundensites aus Off-Site-Backups, gehostet auf dem
+    | WWC-Server in eigenen Docker-Stacks. Belastet den Kundenserver nicht.
+    */
+    'clones_host_dir' => env('WWC_CLONES_HOST_DIR'),
+    'clone_base_url' => env('WWC_CLONE_BASE_URL', 'http://localhost'),
+    'clone_port_min' => (int) env('WWC_CLONE_PORT_MIN', 9100),
+    'clone_port_max' => (int) env('WWC_CLONE_PORT_MAX', 9299),
+
     // Optional: OpenAI-compatible API for Impressum-Extraktion
     'ai_api_key' => env('WWC_AI_API_KEY', env('OPENAI_API_KEY')),
     'ai_api_base' => env('WWC_AI_API_BASE', 'https://api.openai.com/v1'),

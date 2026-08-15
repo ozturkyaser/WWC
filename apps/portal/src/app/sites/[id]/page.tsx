@@ -36,6 +36,17 @@ type BackupSchedule = {
   incremental_daily?: boolean;
 };
 
+type DevClone = {
+  status: string;
+  url?: string | null;
+  backup_id?: string | null;
+  php_image?: string | null;
+  admin_user?: string | null;
+  admin_pass?: string | null;
+  error?: string | null;
+  built_at?: string | null;
+};
+
 type Staging = {
   exists: boolean;
   url?: string | null;
@@ -93,6 +104,7 @@ type SiteDetail = {
     backup_schedule?: BackupSchedule | null;
   };
   server_backups?: ServerBackup[];
+  dev_clone?: DevClone | null;
   staging_portal?: StagingPortal;
   events: Array<{ id: string; type: string; title: string; severity: string; occurred_at: string }>;
   jobs: JobRow[];
@@ -409,6 +421,38 @@ export default function SiteDetailPage() {
     (site.inventory?.core?.update_available ? 1 : 0) +
     plugins.filter((p) => p.update_available).length +
     themes.filter((t) => t.update_available).length;
+
+  const devClone = detail.dev_clone;
+
+  async function devCloneBuild() {
+    setBusy(true);
+    try {
+      await api(`/sites/${params.id}/dev-clone`, { method: "POST" });
+      setMsgTone("info");
+      setMsg("Dev-Kopie wird gebaut – das dauert einige Minuten…");
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function devCloneDestroy() {
+    setBusy(true);
+    try {
+      await api(`/sites/${params.id}/dev-clone`, { method: "DELETE" });
+      setMsgTone("ok");
+      setMsg("Dev-Kopie gelöscht");
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function grantStagingAdmin() {
     setBusy(true);
@@ -1382,6 +1426,71 @@ export default function SiteDetailPage() {
               Development-Umgebung erzeugen
             </button>
           )}
+
+          <div className="surface surface-pad" style={{ marginTop: 18, background: "rgba(0,0,0,0.18)" }}>
+            <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>
+              WWC Dev-Kopie
+              {devClone?.status === "ready" && <span className="badge completed" style={{ marginLeft: 8 }}>bereit</span>}
+              {devClone?.status === "building" && <span className="badge running" style={{ marginLeft: 8 }}>wird gebaut…</span>}
+              {devClone?.status === "failed" && <span className="badge failed" style={{ marginLeft: 8 }}>fehlgeschlagen</span>}
+            </h4>
+            <p className="muted" style={{ margin: "0 0 10px", fontSize: "0.85rem" }}>
+              Kopie der Site aus dem letzten WWC-Server-Backup, gehostet auf dem WWC-Server im eigenen
+              Docker-Stack (passende PHP-Version). Belastet den Kundenserver überhaupt nicht –
+              ideal zum Testen von Updates und Änderungen.
+            </p>
+            {devClone?.status === "ready" && (
+              <div className="meta-row" style={{ marginBottom: 10 }}>
+                {devClone.url && (
+                  <span className="meta-chip">
+                    URL: <a href={devClone.url} target="_blank" rel="noreferrer">{devClone.url}</a>
+                  </span>
+                )}
+                {devClone.admin_user && (
+                  <span className="meta-chip">
+                    Admin: {devClone.admin_user}{devClone.admin_pass ? ` / ${devClone.admin_pass}` : ""}
+                  </span>
+                )}
+                {devClone.backup_id && <span className="meta-chip">Quelle: {devClone.backup_id}</span>}
+                {devClone.php_image && <span className="meta-chip">PHP {devClone.php_image}</span>}
+              </div>
+            )}
+            {devClone?.status === "failed" && devClone.error && (
+              <div className="error" style={{ marginBottom: 10 }}>{devClone.error}</div>
+            )}
+            <div className="row">
+              {devClone?.status === "ready" && devClone.url && (
+                <>
+                  <a className="btn" href={`${devClone.url}/wp-admin/`} target="_blank" rel="noreferrer">
+                    WP-Admin öffnen
+                  </a>
+                  <a className="btn secondary" href={devClone.url} target="_blank" rel="noreferrer">
+                    Frontend prüfen
+                  </a>
+                </>
+              )}
+              <button
+                className="btn secondary"
+                disabled={busy || devClone?.status === "building"}
+                type="button"
+                onClick={devCloneBuild}
+              >
+                {devClone?.status === "ready" ? "Neu aufbauen (aktuelles Backup)" : "Dev-Kopie erstellen"}
+              </button>
+              {devClone && devClone.status !== "building" && (
+                <button
+                  className="btn danger"
+                  disabled={busy}
+                  type="button"
+                  onClick={() => {
+                    if (confirm("WWC Dev-Kopie löschen?")) devCloneDestroy();
+                  }}
+                >
+                  Löschen
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

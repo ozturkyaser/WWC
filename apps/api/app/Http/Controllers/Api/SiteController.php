@@ -113,6 +113,7 @@ class SiteController extends Controller
             ],
             'maintenance' => $maintenance->payloadForSite($site),
             'server_backups' => $serverBackups,
+            'dev_clone' => app(\App\Services\DevCloneService::class)->payload($site),
         ]);
     }
 
@@ -187,6 +188,11 @@ class SiteController extends Controller
         $remote = $purge->purgeRemoteSite($site);
         $pairing->disconnect($site);
         app(\App\Services\BackupStorageService::class)->deleteAllForSite($site);
+        try {
+            app(\App\Services\DevCloneService::class)->destroy($site);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Dev clone cleanup on site delete failed', ['site' => $site->id, 'error' => $e->getMessage()]);
+        }
         AuditLogger::log('site.deleted', $orgId, $request->user(), $site->id, [
             'remote' => $remote,
         ], $request);
