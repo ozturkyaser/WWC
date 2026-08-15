@@ -15,15 +15,21 @@ class EnsureOrganizationAccess
             return response()->json(['message' => 'No organization selected.'], 403);
         }
 
-        $ok = Membership::where('user_id', $user->id)
+        $membership = Membership::where('user_id', $user->id)
             ->where('organization_id', $user->current_organization_id)
-            ->exists();
+            ->first();
 
-        if (! $ok) {
+        if (! $membership) {
             return response()->json(['message' => 'Forbidden for organization.'], 403);
         }
 
+        // Viewer duerfen nur lesen.
+        if ($membership->role === 'viewer' && ! in_array($request->method(), ['GET', 'HEAD', 'OPTIONS'], true)) {
+            return response()->json(['message' => 'Nur-Lese-Zugriff: Diese Aktion erfordert Schreibrechte.'], 403);
+        }
+
         $request->attributes->set('organization_id', $user->current_organization_id);
+        $request->attributes->set('membership_role', $membership->role);
 
         return $next($request);
     }

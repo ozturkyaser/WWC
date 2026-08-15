@@ -8,6 +8,8 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("admin@wwc.local");
   const [password, setPassword] = useState("password");
+  const [code, setCode] = useState("");
+  const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -16,11 +18,17 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await api<{ token: string }>("/auth/login", {
+      const res = await api<{ token?: string; requires_2fa?: boolean }>("/auth/login", {
         method: "POST",
         auth: false,
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...(code ? { code } : {}) }),
       });
+      if (res.requires_2fa && !res.token) {
+        setNeedsCode(true);
+        setLoading(false);
+        return;
+      }
+      if (!res.token) throw new Error("Login fehlgeschlagen");
       setToken(res.token);
       const next = new URLSearchParams(window.location.search).get("next");
       if (next) {
@@ -60,6 +68,24 @@ export default function LoginPage() {
           <label htmlFor="password">Passwort</label>
           <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </div>
+        {needsCode && (
+          <div className="field">
+            <label htmlFor="code">2FA-Code</label>
+            <input
+              id="code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="6-stelliger Code oder Recovery-Code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoFocus
+              required
+            />
+            <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+              Code aus deiner Authenticator-App eingeben.
+            </p>
+          </div>
+        )}
         {error && <p className="error">{error}</p>}
         <button className="btn" style={{ width: "100%", marginTop: 8 }} disabled={loading} type="submit">
           {loading ? "…" : "Anmelden"}

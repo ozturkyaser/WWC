@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\MaintenanceController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\StagingController;
 use App\Http\Middleware\EnsureOrganizationAccess;
+use App\Http\Middleware\RequireAdminRole;
 use App\Http\Middleware\VerifyAgentHmac;
 use Illuminate\Support\Facades\Route;
 
@@ -26,6 +27,9 @@ Route::prefix('auth')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::post('logout', [AuthController::class, 'logout']);
+        Route::post('2fa/setup', [AuthController::class, 'twoFactorSetup']);
+        Route::post('2fa/enable', [AuthController::class, 'twoFactorEnable']);
+        Route::post('2fa/disable', [AuthController::class, 'twoFactorDisable']);
     });
 });
 
@@ -53,17 +57,17 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::get('/dashboard', [SiteController::class, 'dashboard']);
     Route::get('/plugin/download', [PluginController::class, 'download']);
     Route::get('/organization', [OrganizationController::class, 'show']);
-    Route::put('/organization', [OrganizationController::class, 'update']);
+    Route::put('/organization', [OrganizationController::class, 'update'])->middleware(RequireAdminRole::class);
     Route::post('/jobs/{id}/cancel', [JobController::class, 'cancel']);
 
     Route::get('/sites', [SiteController::class, 'index']);
     Route::post('/sites', [SiteController::class, 'store']);
     Route::get('/sites/{id}', [SiteController::class, 'show']);
-    Route::delete('/sites/{id}', [SiteController::class, 'destroy']);
+    Route::delete('/sites/{id}', [SiteController::class, 'destroy'])->middleware(RequireAdminRole::class);
     Route::post('/sites/{id}/pairing-code', [SiteController::class, 'pairingCode']);
     Route::post('/sites/{id}/reconnect', [SiteController::class, 'reconnect']);
     Route::post('/sites/{id}/commands', [SiteController::class, 'dispatchCommand']);
-    Route::post('/sites/{id}/rotate-secret', [SiteController::class, 'rotateSecret']);
+    Route::post('/sites/{id}/rotate-secret', [SiteController::class, 'rotateSecret'])->middleware(RequireAdminRole::class);
     Route::post('/sites/{id}/staging/grant-admin', [StagingController::class, 'grantAdmin']);
     Route::get('/sites/{id}/maintenance', [MaintenanceController::class, 'show']);
     Route::put('/sites/{id}/maintenance', [MaintenanceController::class, 'updateSettings']);
@@ -85,7 +89,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/projects', [ProjectController::class, 'store']);
     Route::get('/projects/{id}', [ProjectController::class, 'show']);
     Route::put('/projects/{id}', [ProjectController::class, 'update']);
-    Route::delete('/projects/{id}', [ProjectController::class, 'destroy']);
+    Route::delete('/projects/{id}', [ProjectController::class, 'destroy'])->middleware(RequireAdminRole::class);
     Route::post('/projects/{id}/reconnect', [ProjectController::class, 'reconnect']);
 
     Route::get('/onboarding/tiers', [OnboardingController::class, 'tiers']);
@@ -101,9 +105,9 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/security/findings/{id}/ignore', [SecurityController::class, 'ignoreFinding']);
 
     Route::get('/invoices', [InvoiceController::class, 'index']);
-    Route::post('/invoices/generate', [InvoiceController::class, 'generate']);
+    Route::post('/invoices/generate', [InvoiceController::class, 'generate'])->middleware(RequireAdminRole::class);
     Route::get('/invoices/export.csv', [InvoiceController::class, 'exportCsv']);
     Route::get('/invoices/{id}', [InvoiceController::class, 'show']);
-    Route::post('/invoices/{id}/paid', [InvoiceController::class, 'markPaid']);
+    Route::post('/invoices/{id}/paid', [InvoiceController::class, 'markPaid'])->middleware(RequireAdminRole::class);
     Route::get('/invoices/{id}/pdf', [InvoiceController::class, 'pdf']);
 });

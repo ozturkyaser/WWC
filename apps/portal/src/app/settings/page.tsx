@@ -37,6 +37,171 @@ type Org = {
   patchstack_api_key?: string;
 };
 
+function TwoFactorSection() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [disablePassword, setDisablePassword] = useState("");
+  const [disableCode, setDisableCode] = useState("");
+  const [showDisable, setShowDisable] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [tone, setTone] = useState<"info" | "ok" | "error">("info");
+
+  useEffect(() => {
+    api<{ two_factor_enabled: boolean }>("/auth/me")
+      .then((r) => setEnabled(r.two_factor_enabled))
+      .catch(() => setEnabled(false));
+  }, []);
+
+  async function startSetup() {
+    setMsg("");
+    try {
+      const res = await api<{ secret: string; otpauth_uri: string }>("/auth/2fa/setup", { method: "POST" });
+      setSetup(res);
+    } catch (e) {
+      setTone("error");
+      setMsg(e instanceof Error ? e.message : "Setup fehlgeschlagen");
+    }
+  }
+
+  async function enable(e: FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    try {
+      const res = await api<{ enabled: boolean; recovery_codes: string[] }>("/auth/2fa/enable", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      });
+      setRecoveryCodes(res.recovery_codes);
+      setEnabled(true);
+      setSetup(null);
+      setCode("");
+      setTone("ok");
+      setMsg("2FA aktiviert. Bewahre die Wiederherstellungscodes sicher auf – sie werden nur einmal angezeigt.");
+    } catch (err) {
+      setTone("error");
+      setMsg(err instanceof Error ? err.message : "Aktivierung fehlgeschlagen");
+    }
+  }
+
+  async function disable(e: FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    try {
+      await api("/auth/2fa/disable", {
+        method: "POST",
+        body: JSON.stringify({ password: disablePassword, code: disableCode }),
+      });
+      setEnabled(false);
+      setShowDisable(false);
+      setDisablePassword("");
+      setDisableCode("");
+      setRecoveryCodes([]);
+      setTone("ok");
+      setMsg("2FA deaktiviert.");
+    } catch (err) {
+      setTone("error");
+      setMsg(err instanceof Error ? err.message : "Deaktivierung fehlgeschlagen");
+    }
+  }
+
+  return (
+    <Section
+      title="Zwei-Faktor-Authentifizierung (2FA)"
+      note="Schützt dein Konto zusätzlich mit einem Einmalcode aus einer Authenticator-App."
+    >
+      <Flash tone={tone}>{msg}</Flash>
+
+      {enabled === null && <p className="muted" style={{ margin: 0 }}>Lade…</p>}
+
+      {enabled === false && !setup && (
+        <button className="btn secondary" type="button" onClick={startSetup}>
+          2FA einrichten
+        </button>
+      )}
+
+      {setup && (
+        <form onSubmit={enable}>
+          <p style={{ marginTop: 0 }}>
+            1. Öffne deine Authenticator-App (z.&nbsp;B. Google Authenticator, Authy) und füge das Konto hinzu –
+            entweder über den Link oder durch manuelle Eingabe des Geheimschlüssels:
+          </p>
+          <p>
+            <a href={setup.otpauth_uri} style={{ wordBreak: "break-all" }}>In Authenticator-App öffnen</a>
+          </p>
+          <div className="field">
+            <label>Geheimschlüssel (manuelle Eingabe)</label>
+            <input readOnly value={setup.secret} onFocus={(e) => e.target.select()} />
+          </div>
+          <div className="field">
+            <label>2. Code aus der App eingeben</label>
+            <input
+              inputMode="numeric"
+              placeholder="6-stelliger Code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              required
+            />
+          </div>
+          <div className="row">
+            <button className="btn" type="submit">Aktivieren</button>
+            <button className="btn secondary" type="button" onClick={() => setSetup(null)}>Abbrechen</button>
+          </div>
+        </form>
+      )}
+
+      {recoveryCodes.length > 0 && (
+        <div className="surface surface-pad" style={{ marginTop: 12, background: "rgba(10,14,18,0.35)" }}>
+          <strong>Wiederherstellungscodes</strong>
+          <p className="muted" style={{ fontSize: 12 }}>
+            Jeder Code funktioniert genau einmal, falls du keinen Zugriff auf deine App hast.
+          </p>
+          <pre style={{ margin: 0, fontSize: 13 }}>{recoveryCodes.join("\n")}</pre>
+        </div>
+      )}
+
+      {enabled === true && recoveryCodes.length === 0 && (
+        <div>
+          <p style={{ marginTop: 0 }}>2FA ist <strong>aktiv</strong>.</p>
+          {!showDisable ? (
+            <button className="btn danger sm" type="button" onClick={() => setShowDisable(true)}>
+              2FA deaktivieren
+            </button>
+          ) : (
+            <form onSubmit={disable}>
+              <div className="grid form-2">
+                <div className="field">
+                  <label>Passwort</label>
+                  <input
+                    type="password"
+                    value={disablePassword}
+                    onChange={(e) => setDisablePassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>2FA-Code</label>
+                  <input
+                    inputMode="numeric"
+                    value={disableCode}
+                    onChange={(e) => setDisableCode(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="row">
+                <button className="btn danger" type="submit">Deaktivieren</button>
+                <button className="btn secondary" type="button" onClick={() => setShowDisable(false)}>Abbrechen</button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function newPackage(): HourPackage {
   return {
     id: `hp-${Date.now().toString(36)}`,
@@ -347,6 +512,8 @@ export default function SettingsPage() {
 
         <button className="btn" type="submit">Alles speichern</button>
       </form>
+
+      <TwoFactorSection />
     </Shell>
   );
 }
