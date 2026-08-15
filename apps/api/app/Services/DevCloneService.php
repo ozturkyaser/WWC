@@ -40,6 +40,7 @@ class DevCloneService
                 : null,
             'error' => $clone['error'] ?? null,
             'built_at' => $clone['built_at'] ?? null,
+            'last_dry_run' => $clone['last_dry_run'] ?? null,
         ];
     }
 
@@ -85,10 +86,12 @@ class DevCloneService
             $this->writeGuardMuPlugin($dir);
             $this->writeComposeFile($dir, $site, $port, $phpImage);
 
-            // 3. Stack starten (MariaDB importiert database.sql beim ersten Start selbst)
+            // 3. Erst NUR die Datenbank starten (importiert database.sql beim ersten Start).
+            //    Der Webserver bleibt aus, bis alle Bereinigungen durch sind — sonst koennten
+            //    ueberfaellige Cron-Events der Live-Site im Clone feuern (Heartbeat, Self-Update).
             $project = $this->projectName($site);
             $this->docker($dir, ['compose', '-p', $project, 'down', '--volumes', '--remove-orphans'], 120, true);
-            $this->docker($dir, ['compose', '-p', $project, 'up', '-d', '--wait'], 600);
+            $this->docker($dir, ['compose', '-p', $project, 'up', '-d', '--wait', 'db'], 600);
 
             // Dateirechte fuer den Webserver-Benutzer
             $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', '--user', 'root', 'cli', 'chown', '-R', '33:33', '/var/www/html'], 300);
@@ -102,11 +105,20 @@ class DevCloneService
             }
             $this->wp($dir, $project, ['option', 'update', 'blog_public', '0'], true);
 
+            // Der WWC-Agent darf im Clone nicht laufen: er wuerde sich mit den
+            // Zugangsdaten der Live-Site an der API melden und Status/Inventar verfaelschen.
+            $this->wp($dir, $project, ['plugin', 'deactivate', 'wwc-agent']);
+            $this->wp($dir, $project, ['option', 'delete', 'wwc_agent'], true);
+
             $adminUser = 'wwc-dev';
             $adminPass = Str::password(20, symbols: false);
             $this->wp($dir, $project, ['user', 'create', $adminUser, 'dev-clone@wwc.local', '--role=administrator', '--user_pass='.$adminPass], true);
             // Falls der User schon existiert (Rebuild): Passwort setzen
             $this->wp($dir, $project, ['user', 'update', $adminUser, '--user_pass='.$adminPass, '--role=administrator'], true);
+
+            // Alte Cron-Events der Live-Site verwerfen, dann erst den Webserver starten
+            $this->wp($dir, $project, ['option', 'delete', 'cron'], true);
+            $this->docker($dir, ['compose', '-p', $project, 'up', '-d', '--wait'], 300);
 
             $this->setState($site, [
                 'status' => 'ready',
@@ -119,10 +131,84 @@ class DevCloneService
                 'error' => null,
                 'built_at' => now()->toIso8601String(),
             ]);
+
+            // Erfolgreicher Clone-Bau = bestandener Restore-Test fuer die ganze Kette
+            foreach ($chain as $step) {
+                $step->update(['verified_at' => now()]);
+            }
         } catch (\Throwable $e) {
             Log::error('Dev clone build failed', ['site' => $site->id, 'error' => $e->getMessage()]);
             $this->setState($site, ['status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 500)]);
         }
+    }
+
+    /**
+     * Fuehrt Updates in der Dev-Kopie aus (Dry-Run ohne Last auf dem Kundenserver).
+     * Ergebnis wird in sites.dev_clone.last_dry_run gespeichert.
+     *
+     * @param  list<array{type:string,slug:string}>  $items
+     */
+    public function dryRun(Site $site, array $items): array
+    {
+        $clone = $site->dev_clone ?? [];
+        if (($clone['status'] ?? '') !== 'ready') {
+            throw new RuntimeException('Dev-Kopie ist nicht bereit.');
+        }
+
+        $dir = $this->cloneDir($site);
+        $project = $this->projectName($site);
+        $results = [];
+
+        foreach ($items as $item) {
+            $type = (string) ($item['type'] ?? '');
+            $slug = (string) ($item['slug'] ?? '');
+            if ($slug === '' && $type !== 'core') {
+                continue;
+            }
+
+            $args = match ($type) {
+                'plugin' => ['plugin', 'update', $slug],
+                'theme' => ['theme', 'update', $slug],
+                'core' => ['core', 'update'],
+                default => null,
+            };
+            if ($args === null) {
+                continue;
+            }
+
+            try {
+                $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', 'cli', 'wp', ...$args], 600);
+                $results[] = ['type' => $type, 'slug' => $slug ?: 'wordpress', 'ok' => true, 'error' => null];
+            } catch (\Throwable $e) {
+                $results[] = ['type' => $type, 'slug' => $slug ?: 'wordpress', 'ok' => false, 'error' => mb_substr($e->getMessage(), 0, 300)];
+            }
+        }
+
+        // Gesundheitscheck: WordPress laeuft noch und das Frontend liefert 200
+        $siteOk = true;
+        $healthError = null;
+        try {
+            $this->wp($dir, $project, ['core', 'is-installed']);
+            $status = trim($this->docker($dir, ['compose', '-p', $project, 'exec', '-T', 'wp', 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', 'http://localhost/'], 60));
+            if (! in_array($status, ['200', '301', '302'], true)) {
+                $siteOk = false;
+                $healthError = "Frontend antwortet mit HTTP {$status}";
+            }
+        } catch (\Throwable $e) {
+            $siteOk = false;
+            $healthError = mb_substr($e->getMessage(), 0, 300);
+        }
+
+        $report = [
+            'at' => now()->toIso8601String(),
+            'items' => $results,
+            'site_ok' => $siteOk,
+            'health_error' => $healthError,
+            'ok' => $siteOk && collect($results)->every(fn ($r) => $r['ok']),
+        ];
+        $this->setState($site, ['last_dry_run' => $report, 'status' => 'ready']);
+
+        return $report;
     }
 
     public function destroy(Site $site): void
@@ -352,6 +438,14 @@ YAML;
     {
         $process = new Process(['docker', ...$args], $dir, null, null, $timeout);
         $process->run();
+        if (! $process->isSuccessful()) {
+            Log::info('dev-clone docker cmd failed', [
+                'args' => implode(' ', $args),
+                'exit' => $process->getExitCode(),
+                'stderr' => mb_substr(trim($process->getErrorOutput()), -300),
+                'stdout' => mb_substr(trim($process->getOutput()), -300),
+            ]);
+        }
         if (! $process->isSuccessful() && ! $allowFailure) {
             throw new RuntimeException('docker '.implode(' ', array_slice($args, 0, 4)).' fehlgeschlagen: '.mb_substr(trim($process->getErrorOutput() ?: $process->getOutput()), -400));
         }

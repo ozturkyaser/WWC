@@ -98,7 +98,7 @@ class SiteController extends Controller
         $serverBackups = $site->serverBackups()
             ->orderByDesc('backup_created_at')
             ->limit(30)
-            ->get(['id', 'backup_id', 'type', 'label', 'status', 'size_bytes', 'wp_version', 'file_count', 'parent_backup_id', 'backup_created_at', 'uploaded_at']);
+            ->get(['id', 'backup_id', 'type', 'label', 'status', 'size_bytes', 'wp_version', 'file_count', 'parent_backup_id', 'backup_created_at', 'uploaded_at', 'verified_at']);
 
         return response()->json([
             'data' => $site,

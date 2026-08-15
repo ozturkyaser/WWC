@@ -13,7 +13,7 @@ class SiteBackup extends Model
     protected $fillable = [
         'organization_id', 'site_id', 'backup_id', 'type', 'label',
         'status', 'size_bytes', 'sha256', 'storage_path', 'wp_version',
-        'file_count', 'parent_backup_id', 'backup_created_at', 'uploaded_at',
+        'file_count', 'parent_backup_id', 'backup_created_at', 'uploaded_at', 'verified_at',
     ];
 
     protected function casts(): array
@@ -21,6 +21,7 @@ class SiteBackup extends Model
         return [
             'backup_created_at' => 'datetime',
             'uploaded_at' => 'datetime',
+            'verified_at' => 'datetime',
         ];
     }
 

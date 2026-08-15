@@ -18,7 +18,8 @@ class BuildDevCloneJob implements ShouldQueue
 
     public int $timeout = 1600;
 
-    public function __construct(public string $siteId) {}
+    /** @param bool $verifyOnly Nur Restore-Test: Clone nach erfolgreichem Bau wieder abbauen */
+    public function __construct(public string $siteId, public bool $verifyOnly = false) {}
 
     public function handle(DevCloneService $clones): void
     {
@@ -27,6 +28,10 @@ class BuildDevCloneJob implements ShouldQueue
             return;
         }
         $clones->build($site);
+
+        if ($this->verifyOnly && (($site->fresh()->dev_clone['status'] ?? '') === 'ready')) {
+            $clones->destroy($site->fresh());
+        }
     }
 
     public function failed(?\Throwable $e): void

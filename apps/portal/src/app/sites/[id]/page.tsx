@@ -16,6 +16,7 @@ type Backup = {
   created_at: string;
   size_bytes?: number;
   offsite?: boolean;
+  verified?: boolean;
 };
 
 type ServerBackup = {
@@ -27,6 +28,7 @@ type ServerBackup = {
   size_bytes?: number;
   backup_created_at?: string | null;
   uploaded_at?: string | null;
+  verified_at?: string | null;
 };
 
 type BackupSchedule = {
@@ -45,6 +47,14 @@ type DevClone = {
   admin_pass?: string | null;
   error?: string | null;
   built_at?: string | null;
+  last_dry_run?: {
+    at?: string;
+    running?: boolean;
+    ok?: boolean;
+    site_ok?: boolean;
+    health_error?: string | null;
+    items?: Array<{ type: string; slug: string; ok: boolean; error?: string | null }>;
+  } | null;
 };
 
 type Staging = {
@@ -408,11 +418,16 @@ export default function SiteDetailPage() {
         created_at: sb.backup_created_at || sb.uploaded_at || "",
         size_bytes: sb.size_bytes,
         offsite: true,
+        verified: Boolean(sb.verified_at),
       });
     }
     for (const b of agentBackups) {
       const existing = byId.get(b.id);
-      byId.set(b.id, { ...b, offsite: b.offsite || Boolean(existing?.offsite) });
+      byId.set(b.id, {
+        ...b,
+        offsite: b.offsite || Boolean(existing?.offsite),
+        verified: Boolean(existing?.verified),
+      });
     }
     return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   })();
@@ -430,6 +445,34 @@ export default function SiteDetailPage() {
       await api(`/sites/${params.id}/dev-clone`, { method: "POST" });
       setMsgTone("info");
       setMsg("Dev-Kopie wird gebaut – das dauert einige Minuten…");
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cloneDryRunSelected() {
+    const items = [...selectedUpdates].map((key) => {
+      const [type, ...rest] = key.split(":");
+      return { type, slug: rest.join(":") };
+    });
+    if (items.length === 0) {
+      setMsgTone("error");
+      setMsg("Bitte mindestens ein Update auswählen");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/sites/${params.id}/dev-clone/dry-run`, {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      setMsgTone("info");
+      setMsg("Dry-Run läuft in der WWC-Kopie – Ergebnis erscheint im Tab Development.");
+      setSelectedUpdates(new Set());
       await load();
     } catch (e) {
       setMsgTone("error");
@@ -846,6 +889,15 @@ export default function SiteDetailPage() {
                   onClick={() => runSelected("staging")}
                 >
                   Dry-Run Auswahl ({selectedUpdates.size})
+                </button>
+                <button
+                  className="btn secondary sm"
+                  disabled={busy || selectedUpdates.size === 0 || devClone?.status !== "ready"}
+                  title={devClone?.status !== "ready" ? "Zuerst im Tab Development eine WWC Dev-Kopie erstellen" : "Testet die Updates in der Kopie auf dem WWC-Server – ohne Last auf dem Kundenserver"}
+                  type="button"
+                  onClick={() => cloneDryRunSelected()}
+                >
+                  Dry-Run in WWC-Kopie ({selectedUpdates.size})
                 </button>
                 <button
                   className="btn sm"
@@ -1300,6 +1352,9 @@ export default function SiteDetailPage() {
                       <span className="badge completed" title="Archiv liegt sicher auf dem WWC-Server">WWC-Server</span>
                     ) : (
                       <span className="badge warn" title="Archiv liegt nur auf dem WordPress-Server">nur lokal</span>
+                    )}{" "}
+                    {b.verified && (
+                      <span className="badge completed" title="Wiederherstellung wurde im Dev-Clone erfolgreich getestet">geprüft</span>
                     )}
                   </td>
                   <td className="muted">{formatBytes(b.size_bytes)}</td>
@@ -1457,6 +1512,39 @@ export default function SiteDetailPage() {
             )}
             {devClone?.status === "failed" && devClone.error && (
               <div className="error" style={{ marginBottom: 10 }}>{devClone.error}</div>
+            )}
+            {devClone?.last_dry_run && (
+              <div style={{ marginBottom: 10 }}>
+                <p style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
+                  <strong>Letzter Dry-Run</strong>{" "}
+                  {devClone.last_dry_run.running ? (
+                    <span className="badge running">läuft…</span>
+                  ) : devClone.last_dry_run.ok ? (
+                    <span className="badge completed">OK</span>
+                  ) : (
+                    <span className="badge failed">Probleme</span>
+                  )}
+                  {devClone.last_dry_run.at && (
+                    <span className="muted" style={{ marginLeft: 8, fontSize: "0.8rem" }}>
+                      {new Date(devClone.last_dry_run.at).toLocaleString("de-DE")}
+                    </span>
+                  )}
+                </p>
+                {(devClone.last_dry_run.items || []).map((it) => (
+                  <div key={`${it.type}:${it.slug}`} className="cell-sub" style={{ fontSize: "0.82rem" }}>
+                    {it.ok ? "✓" : "✗"} {it.type}: {it.slug}
+                    {it.error ? ` – ${it.error}` : ""}
+                  </div>
+                ))}
+                {devClone.last_dry_run.health_error && (
+                  <div className="error" style={{ marginTop: 6 }}>{devClone.last_dry_run.health_error}</div>
+                )}
+                {!devClone.last_dry_run.running && devClone.last_dry_run.ok && (
+                  <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
+                    Kopie läuft nach den Updates stabil – die Updates können live ausgeführt werden.
+                  </p>
+                )}
+              </div>
             )}
             <div className="row">
               {devClone?.status === "ready" && devClone.url && (

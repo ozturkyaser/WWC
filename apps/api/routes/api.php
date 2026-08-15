@@ -71,6 +71,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/maintenance/runs/{runId}/execute', [MaintenanceController::class, 'executePlan']);
     Route::put('/sites/{id}/backup-schedule', [SiteController::class, 'updateBackupSchedule']);
     Route::post('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'create']);
+    Route::post('/sites/{id}/dev-clone/dry-run', [\App\Http\Controllers\Api\DevCloneController::class, 'dryRun']);
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
     Route::get('/sites/{siteId}/backups/latest/download', [BackupController::class, 'downloadLatest']);
     Route::get('/sites/{siteId}/backups/{backupId}/download', [BackupController::class, 'download']);
