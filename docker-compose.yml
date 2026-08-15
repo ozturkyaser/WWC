@@ -1,4 +1,53 @@
 services:
+  api:
+    build: ./apps/api
+    command: php artisan serve --host=0.0.0.0 --port=8080
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./apps/api:/app
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Laravel-Scheduler: fuehrt die geplanten Aufgaben aus (Scans, KI-Wartung, Abrechnung)
+  scheduler:
+    build: ./apps/api
+    command: php artisan schedule:work
+    volumes:
+      - ./apps/api:/app
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Queue-Worker: verarbeitet Hintergrund-Jobs (Agent-Kommandos, Wartungs-Pipeline, Mails)
+  worker:
+    build: ./apps/api
+    command: php artisan queue:work redis --sleep=1 --tries=3 --timeout=300
+    volumes:
+      - ./apps/api:/app
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -35,7 +84,7 @@ services:
   wordpress:
     image: wordpress:php8.3-apache
     ports:
-      - "8088:80"
+      - "8090:80"
     environment:
       WORDPRESS_DB_HOST: wordpress-db
       WORDPRESS_DB_USER: wordpress
