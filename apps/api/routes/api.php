@@ -66,6 +66,8 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/hardening/policy', [\App\Http\Controllers\Api\OpsController::class, 'applyHardeningPolicy']);
     Route::put('/hardening-templates', [\App\Http\Controllers\Api\OpsController::class, 'saveHardeningTemplate'])->middleware(RequireAdminRole::class);
     Route::get('/audit-logs', [\App\Http\Controllers\Api\OpsController::class, 'auditLogs']);
+    Route::get('/activity', [\App\Http\Controllers\Api\ActivityController::class, 'index']);
+    Route::put('/sites/{id}/activity-guard', [\App\Http\Controllers\Api\ActivityController::class, 'updateGuard']);
     Route::get('/projects/{id}/report', [\App\Http\Controllers\Api\OpsController::class, 'monthlyReport']);
     Route::get('/team', [\App\Http\Controllers\Api\TeamController::class, 'index']);
     Route::post('/team/invites', [\App\Http\Controllers\Api\TeamController::class, 'invite'])->middleware(RequireAdminRole::class);

@@ -3,7 +3,7 @@
  * Plugin Name: WWC Agent
  * Plugin URI: https://wwc.local
  * Description: Sicheres Remote-Management-Agent-Plugin für die WWC Wartungsplattform.
- * Version: 0.5.0
+ * Version: 0.6.0
  * Requires at least: 6.0
  * Requires PHP: 8.1
  * Author: WWC
@@ -21,7 +21,7 @@ if (defined('WWC_AGENT_DISABLED') && WWC_AGENT_DISABLED) {
     return;
 }
 
-define('WWC_AGENT_VERSION', '0.5.0');
+define('WWC_AGENT_VERSION', '0.6.0');
 define('WWC_AGENT_FILE', __FILE__);
 define('WWC_AGENT_DIR', plugin_dir_path(__FILE__));
 define('WWC_AGENT_URL', plugin_dir_url(__FILE__));
@@ -37,6 +37,8 @@ require_once WWC_AGENT_DIR.'includes/class-backup.php';
 require_once WWC_AGENT_DIR.'includes/class-backup-uploader.php';
 require_once WWC_AGENT_DIR.'includes/class-staging.php';
 require_once WWC_AGENT_DIR.'includes/class-hardening.php';
+require_once WWC_AGENT_DIR.'includes/class-activity.php';
+require_once WWC_AGENT_DIR.'includes/class-guard.php';
 require_once WWC_AGENT_DIR.'includes/class-api-client.php';
 require_once WWC_AGENT_DIR.'includes/class-job-progress.php';
 require_once WWC_AGENT_DIR.'includes/class-background.php';
@@ -51,6 +53,8 @@ final class WWC_Agent
     {
         WWC_Agent_Rest::register();
         WWC_Agent_Hardening::register();
+        WWC_Agent_Guard::register();
+        WWC_Agent_Activity::register();
         WWC_Agent_Watchers::register();
         WWC_Agent_Heartbeat::register();
         WWC_Agent_Background::register();

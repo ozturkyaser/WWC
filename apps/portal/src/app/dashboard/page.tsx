@@ -145,7 +145,7 @@ export default function DashboardPage() {
             </Section>
           )}
 
-          <Section title="Live-Events" note="Neueste Meldungen" action={<Link className="btn secondary sm" href="/sites">Alle Sites</Link>}>
+          <Section title="Live-Events" note="Neueste Meldungen" action={<Link className="btn secondary sm" href="/activity">WordPress-Log</Link>}>
             {data.recent_events.length === 0 && <p className="muted" style={{ margin: 0 }}>Noch keine Events.</p>}
             {data.recent_events.map((ev) => (
               <div className="event-item" key={ev.id}>

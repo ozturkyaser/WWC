@@ -5,7 +5,7 @@ set -euo pipefail
 # Damit Online-WordPress-Sites die lokale API erreichen können.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-API_PORT="${WWC_API_PORT:-8081}"
+API_PORT="${WWC_API_PORT:-8082}"
 
 if ! curl -fsS "http://127.0.0.1:${API_PORT}/up" >/dev/null 2>&1; then
   echo "API auf Port ${API_PORT} ist nicht erreichbar. Bitte zuerst die API starten."
@@ -47,8 +47,8 @@ if [[ -f "${ENV_FILE}" ]]; then
   rm -f "${ENV_FILE}.bak"
 fi
 
-if docker ps --format '{{.Names}}' | grep -q '^wwc-api$'; then
-  docker exec wwc-api php artisan config:clear >/dev/null 2>&1 || true
+if docker ps --format '{{.Names}}' | grep -qE '^wwc-api'; then
+  docker compose -f "${ROOT}/docker-compose.yml" exec -T api php artisan config:clear >/dev/null 2>&1 || true
 fi
 
 cat <<EOF

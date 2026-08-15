@@ -83,7 +83,7 @@ class SiteController extends Controller
             ->with(['client', 'project', 'findings.vulnerability'])
             ->findOrFail($id);
 
-        $events = SiteEvent::where('site_id', $site->id)->latest('occurred_at')->limit(50)->get();
+        $events = SiteEvent::where('site_id', $site->id)->latest('occurred_at')->limit(120)->get();
         $jobs = $site->jobs()->latest()->limit(30)->get()->map(fn (AgentJob $job) => JobProgress::enrich($job));
         $activeJobs = $site->jobs()
             ->whereIn('status', ['pending', 'running'])

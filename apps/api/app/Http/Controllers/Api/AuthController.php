@@ -70,7 +70,7 @@ class AuthController extends Controller
 
         $user = User::where('email', $data['email'])->first();
         if (! $user || ! Hash::check($data['password'], $user->password)) {
-            throw ValidationException::withMessages(['email' => ['Invalid credentials.']]);
+            throw ValidationException::withMessages(['email' => ['E-Mail oder Passwort ist falsch.']]);
         }
 
         if ($user->hasTwoFactorEnabled()) {

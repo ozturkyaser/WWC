@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Site;
 use App\Models\SiteEvent;
 use App\Models\VulnerabilityFinding;
+use App\Services\ActivityMonitorService;
 use App\Services\AlertService;
 use App\Services\AuditLogger;
 use App\Services\MaintenanceAgentService;
@@ -13,7 +14,6 @@ use App\Services\PluginPackager;
 use App\Services\SiteOnboardingService;
 use App\Services\StagingPortalService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 
 class AgentIngressController extends Controller
@@ -76,21 +76,14 @@ class AgentIngressController extends Controller
         }
 
         foreach ($data['events'] ?? [] as $event) {
-            SiteEvent::create([
-                'organization_id' => $site->organization_id,
-                'site_id' => $site->id,
-                'type' => $event['type'] ?? 'info',
-                'severity' => $event['severity'] ?? 'info',
-                'title' => $event['title'] ?? 'Event',
-                'payload' => $this->sanitizeEventPayload($event['type'] ?? '', $event['payload'] ?? []),
-                'occurred_at' => $event['occurred_at'] ?? now(),
-            ]);
+            $this->storeAgentEvent($site, $event);
         }
 
         return response()->json([
             'ok' => true,
             'server_time' => now()->toIso8601String(),
             'agent_update' => $this->agentUpdatePayload($data['agent_version'] ?? null),
+            'guard' => app(ActivityMonitorService::class)->guardPayload($site->fresh()),
         ]);
     }
 
@@ -109,15 +102,7 @@ class AgentIngressController extends Controller
 
         $created = [];
         foreach ($data['events'] as $event) {
-            $created[] = SiteEvent::create([
-                'organization_id' => $site->organization_id,
-                'site_id' => $site->id,
-                'type' => $event['type'],
-                'severity' => $event['severity'] ?? 'info',
-                'title' => $event['title'],
-                'payload' => $this->sanitizeEventPayload($event['type'], $event['payload'] ?? []),
-                'occurred_at' => $event['occurred_at'] ?? now(),
-            ]);
+            $created[] = $this->storeAgentEvent($site, $event);
         }
 
         $site->update(['last_seen_at' => now(), 'status' => 'online']);
@@ -358,29 +343,35 @@ class AgentIngressController extends Controller
         }
     }
 
+    private function storeAgentEvent(Site $site, array $event): SiteEvent
+    {
+        $type = (string) ($event['type'] ?? 'info');
+        $row = SiteEvent::create([
+            'organization_id' => $site->organization_id,
+            'site_id' => $site->id,
+            'type' => $type,
+            'severity' => $event['severity'] ?? 'info',
+            'title' => $event['title'] ?? 'Event',
+            'payload' => $this->sanitizeEventPayload($type, is_array($event['payload'] ?? null) ? $event['payload'] : []),
+            'occurred_at' => $event['occurred_at'] ?? now(),
+        ]);
+
+        app(ActivityMonitorService::class)->ingest($site, $row);
+
+        return $row->fresh();
+    }
+
     /**
-     * Harden sensitive event payloads (failed logins): encrypt password at rest, keep hash + metadata.
+     * Never persist passwords or secrets from WordPress events.
      */
     private function sanitizeEventPayload(string $type, array $payload): array
     {
-        if ($type !== 'login_failed') {
-            return $payload;
+        foreach (['password', 'pwd', 'pass', 'passwd', 'user_pass', 'application_password', 'secret', 'token'] as $key) {
+            unset($payload[$key]);
         }
+        unset($payload['password_encrypted']);
 
-        $password = $payload['password'] ?? null;
-        unset($payload['password'], $payload['pwd'], $payload['pass']);
-
-        if (is_string($password) && $password !== '') {
-            $payload['password_length'] = $payload['password_length'] ?? strlen($password);
-            $payload['password_sha256'] = $payload['password_sha256'] ?? hash('sha256', $password);
-            try {
-                $payload['password_encrypted'] = Crypt::encryptString($password);
-            } catch (\Throwable) {
-                // If encryption fails, keep hash only — never store plaintext.
-            }
-        }
-
-        foreach (['username', 'url', 'request_uri', 'ip', 'user_agent', 'referer'] as $key) {
+        foreach (['username', 'url', 'request_uri', 'ip', 'user_agent', 'referer', 'user_login', 'user_email'] as $key) {
             if (isset($payload[$key]) && is_string($payload[$key])) {
                 $payload[$key] = mb_substr($payload[$key], 0, 500);
             }

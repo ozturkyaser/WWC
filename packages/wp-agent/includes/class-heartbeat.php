@@ -48,6 +48,9 @@ final class WWC_Agent_Heartbeat
         ]);
 
         if (is_array($result)) {
+            if (isset($result['guard']) && is_array($result['guard'])) {
+                WWC_Agent_Guard::apply($result['guard']);
+            }
             WWC_Agent_Self_Updater::maybe_auto_update_from_heartbeat($result);
         }
 

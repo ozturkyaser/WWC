@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProcessBar, ProcessList } from "@/components/ProcessBar";
@@ -150,11 +150,33 @@ type SiteDetail = {
     } | null;
     freeze_until?: string | null;
     freeze_reason?: string | null;
+    activity_guard?: {
+      enabled?: boolean;
+      auto_block?: boolean;
+      block?: string[];
+    } | null;
   };
   server_backups?: ServerBackup[];
   dev_clone?: DevClone | null;
   staging_portal?: StagingPortal;
-  events: Array<{ id: string; type: string; title: string; severity: string; occurred_at: string }>;
+  events: Array<{
+    id: string;
+    type: string;
+    title: string;
+    severity: string;
+    occurred_at: string;
+    payload?: {
+      user_login?: string | null;
+      user_email?: string | null;
+      roles?: string[];
+      ip?: string | null;
+      target_login?: string | null;
+      plugin?: string;
+      theme?: string;
+      option?: string;
+      monitor?: { flags?: string[]; score?: number };
+    } | null;
+  }>;
   jobs: JobRow[];
   active_jobs?: ActiveJob[];
   prioritized_updates?: Array<{
@@ -237,6 +259,14 @@ const HARDENING_MEASURES: Array<{ key: keyof HardeningSettings; label: string; n
   { key: "disable_directory_listing", label: "Verzeichnislisten deaktivieren", note: "Options -Indexes in der .htaccess – Ordnerinhalte sind nicht mehr einsehbar." },
 ];
 
+const GUARD_RULES: Array<{ key: string; label: string; note: string }> = [
+  { key: "new_admin", label: "Neue Administratoren", note: "Stoppt das Anlegen von Admin-Konten." },
+  { key: "role_escalate", label: "Rollen-Erhöhung", note: "Verhindert, dass jemand zum Administrator gemacht wird." },
+  { key: "plugin_install", label: "Plugin-Installation", note: "Neue Plugins können nicht mehr hochgeladen oder installiert werden." },
+  { key: "theme_switch", label: "Theme-Wechsel", note: "Theme-Wechsel und Theme-Installation werden zurückgedreht." },
+  { key: "file_edit", label: "Datei-Editor", note: "Plugin-/Theme-Dateien dürfen nicht im Admin bearbeitet werden." },
+];
+
 const HARDENING_CHECK_LABELS: Record<string, { label: string; goodWhen: boolean }> = {
   wp_debug: { label: "WP_DEBUG aktiv", goodWhen: false },
   admin_user_exists: { label: "Benutzer „admin“ existiert", goodWhen: false },
@@ -256,12 +286,13 @@ function formatBytes(n?: number) {
 
 export default function SiteDetailPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const [detail, setDetail] = useState<SiteDetail | null>(null);
   const [install, setInstall] = useState<InstallInfo | null>(null);
   const [msg, setMsg] = useState("");
   const [msgTone, setMsgTone] = useState<"info" | "error" | "ok">("info");
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState(searchParams.get("tab") || "overview");
   const [selectedUpdates, setSelectedUpdates] = useState<Set<string>>(new Set());
   const [maintBusy, setMaintBusy] = useState(false);
   const [scanExcludes, setScanExcludes] = useState<Set<string>>(new Set());
@@ -269,6 +300,7 @@ export default function SiteDetailPage() {
   const [scanInitId, setScanInitId] = useState("");
   const [hardDraft, setHardDraft] = useState<HardeningSettings | null>(null);
   const [hardBusy, setHardBusy] = useState(false);
+  const [guardBusy, setGuardBusy] = useState(false);
 
   const latestScanJob = (detail?.jobs || []).find(
     (j) => j.command === "backup_scan" && j.status === "completed"
@@ -383,6 +415,32 @@ export default function SiteDetailPage() {
       setMsg(e instanceof Error ? e.message : "Fehler");
     } finally {
       setHardBusy(false);
+    }
+  }
+
+  async function saveGuard(patch: { enabled?: boolean; auto_block?: boolean; block?: string[] }) {
+    if (!detail) return;
+    const current = detail.data.activity_guard || {};
+    setGuardBusy(true);
+    setMsgTone("info");
+    setMsg("");
+    try {
+      await api(`/sites/${params.id}/activity-guard`, {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: patch.enabled ?? Boolean(current.enabled),
+          auto_block: patch.auto_block ?? Boolean(current.auto_block),
+          block: patch.block ?? current.block ?? [],
+        }),
+      });
+      setMsgTone("ok");
+      setMsg("Wache gespeichert – gilt ab dem nächsten Heartbeat.");
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setGuardBusy(false);
     }
   }
 
@@ -1851,20 +1909,93 @@ export default function SiteDetailPage() {
       )}
 
       {tab === "activity" && (
+        <>
+        <div className="surface surface-pad" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>Wache</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Überwacht das Protokoll. Bei Verdacht kommt eine Benachrichtigung.
+            Mit Auto-Stopp bricht der Agent die passende Aktion auf WordPress ab.
+          </p>
+          {(() => {
+            const g = detail.data.activity_guard || {};
+            const block = g.block || [];
+            return (
+              <>
+                <div className="row" style={{ gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+                  <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(g.enabled)}
+                      disabled={guardBusy}
+                      onChange={(e) => saveGuard({ enabled: e.target.checked, auto_block: g.auto_block, block })}
+                    />
+                    Wache aktiv
+                  </label>
+                  <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(g.auto_block)}
+                      disabled={guardBusy || !g.enabled}
+                      onChange={(e) => saveGuard({ enabled: true, auto_block: e.target.checked, block })}
+                    />
+                    Verdächtige Aktionen automatisch stoppen
+                  </label>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {GUARD_RULES.map((r) => (
+                    <label key={r.key} className="row" style={{ gap: 8, alignItems: "flex-start" }}>
+                      <input
+                        type="checkbox"
+                        style={{ marginTop: 3 }}
+                        checked={block.includes(r.key)}
+                        disabled={guardBusy}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...new Set([...block, r.key])]
+                            : block.filter((k) => k !== r.key);
+                          saveGuard({ enabled: g.enabled ?? true, auto_block: g.auto_block, block: next });
+                        }}
+                      />
+                      <span>
+                        <strong>{r.label}</strong>
+                        <br />
+                        <span className="muted" style={{ fontSize: "0.85rem" }}>{r.note}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+        </div>
         <div className="grid two">
           <div className="surface surface-pad">
-            <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>Events</h3>
-            {detail.events.map((ev) => (
-              <div className="event-item" key={ev.id}>
-                <div className="list-card-top">
-                  <div>
-                    <strong>{ev.title}</strong>
-                    <div className="cell-sub">{new Date(ev.occurred_at).toLocaleString("de-DE")}</div>
+            <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>WordPress-Protokoll</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Wer hat sich angemeldet, Benutzer geändert, Plugins installiert oder Inhalte bearbeitet.
+            </p>
+            {detail.events.map((ev) => {
+              const p = ev.payload || {};
+              const flags = p.monitor?.flags || [];
+              return (
+                <div className="event-item" key={ev.id}>
+                  <div className="list-card-top">
+                    <div>
+                      <strong>{ev.title}</strong>
+                      <div className="cell-sub">
+                        {new Date(ev.occurred_at).toLocaleString("de-DE")}
+                        {p.user_login ? ` · ${p.user_login}` : ""}
+                        {p.ip ? ` · ${p.ip}` : ""}
+                      </div>
+                      {flags.length > 0 && (
+                        <div className="cell-sub">Wache: {flags.join(", ")}</div>
+                      )}
+                    </div>
+                    <span className={`badge ${ev.severity}`}>{ev.severity}</span>
                   </div>
-                  <span className={`badge ${ev.severity}`}>{ev.severity}</span>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {detail.events.length === 0 && <p className="muted">Keine Events.</p>}
           </div>
           <div className="surface surface-pad">
@@ -1890,6 +2021,7 @@ export default function SiteDetailPage() {
             {detail.jobs.length === 0 && <p className="muted">Keine Jobs.</p>}
           </div>
         </div>
+        </>
       )}
     </Shell>
   );

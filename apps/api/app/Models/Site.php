@@ -23,7 +23,7 @@ class Site extends Model
         'maintenance_agent_enabled', 'maintenance_cadence', 'maintenance_auto_apply',
         'maintenance_last_run_at', 'maintenance_next_run_at', 'maintenance_agent_meta',
         'backup_schedule', 'backup_last_scheduled_at', 'dev_clone', 'hardening',
-        'monitor', 'freeze_until', 'freeze_reason',
+        'monitor', 'activity_guard', 'freeze_until', 'freeze_reason',
     ];
 
     protected $hidden = [
@@ -52,6 +52,7 @@ class Site extends Model
             'dev_clone' => 'array',
             'hardening' => 'array',
             'monitor' => 'array',
+            'activity_guard' => 'array',
             'freeze_until' => 'datetime',
         ];
     }

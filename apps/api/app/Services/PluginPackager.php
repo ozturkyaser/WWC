@@ -10,8 +10,8 @@ class PluginPackager
     public function sourcePath(): string
     {
         $candidates = [
-            resource_path('wp-agent'),
             base_path('../../packages/wp-agent'),
+            resource_path('wp-agent'),
         ];
 
         foreach ($candidates as $path) {
