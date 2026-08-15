@@ -203,103 +203,70 @@ final class WWC_Agent_Backup
 
     public static function create_full(string $label = 'manual', array $options = []): array
     {
-        @set_time_limit(600);
-        @ini_set('memory_limit', '512M');
-
-        WWC_Agent_Job_Progress::report(4, 'Full-Backup starten…', true);
-        WWC_Agent_Job_Progress::log('Backup-ID wird erzeugt, Zielverzeichnis anlegen');
-
-        $id = 'full-'.gmdate('Ymd-His').'-'.wp_generate_password(6, false, false);
-        $dir = self::root().'/'.$id;
-        wp_mkdir_p($dir);
-        WWC_Agent_Job_Progress::log('Ziel: '.$dir, 6);
-
-        $dbFile = $dir.'/database.sql';
-        $filesZip = $dir.'/files.zip';
-        WWC_Agent_Job_Progress::report(12, 'Datenbank exportieren…', true);
-        $db = self::export_database($dbFile);
-        if (! $db['ok']) {
-            self::rrmdir($dir);
-
-            return $db;
+        self::prepare_runtime();
+        $jobId = WWC_Agent_Job_Progress::currentJobId() ?: ('local-'.wp_generate_password(8, false, false));
+        $work = self::load_work($jobId);
+        if ($work === null) {
+            $work = self::start_full_work($jobId, $label, $options);
+        } else {
+            WWC_Agent_Job_Progress::report(
+                (int) ($work['percent'] ?? 8),
+                'Backup fortsetzen ('.$work['phase'].')…',
+                true
+            );
         }
-        WWC_Agent_Job_Progress::log(
-            'Datenbank exportiert ('.(int) ($db['tables'] ?? 0).' Tabellen, '.self::format_bytes((int) ($db['bytes'] ?? 0)).')',
-            28,
+
+        $started = microtime(true);
+        $budget = self::slice_budget();
+
+        while (! self::slice_exhausted($started, $budget)) {
+            if (($work['phase'] ?? '') === 'db') {
+                $step = self::export_database_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
+            }
+            if (($work['phase'] ?? '') === 'scan') {
+                $step = self::scan_files_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
+            }
+            if (($work['phase'] ?? '') === 'zip') {
+                $step = self::zip_files_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
+            }
+            if (($work['phase'] ?? '') === 'finish') {
+                $result = self::finish_full($work);
+                self::clear_work($jobId);
+
+                return $result;
+            }
+
+            return ['ok' => false, 'error' => 'Unbekannte Backup-Phase'];
+        }
+
+        self::save_work($jobId, $work);
+        WWC_Agent_Job_Progress::report(
+            (int) ($work['percent'] ?? 10),
+            'Hosting-Limit: Backup wird gleich fortgesetzt…',
             true
         );
 
-        WWC_Agent_Job_Progress::report(32, 'Dateien scannen…', true);
-        $settings = self::settings($options);
-        $skipped = ['count' => 0, 'bytes' => 0, 'samples' => []];
-        $fileMap = self::build_file_map($settings, $skipped);
-        $fileCount = count($fileMap);
-        WWC_Agent_Job_Progress::log($fileCount.' Dateien erfasst', 48, true);
-        if ($skipped['count'] > 0) {
-            WWC_Agent_Job_Progress::log(sprintf(
-                '%d Datei(en) ausgeschlossen (%s gespart): %s',
-                $skipped['count'],
-                self::format_bytes((int) $skipped['bytes']),
-                implode(', ', array_slice($skipped['samples'], 0, 5)).($skipped['count'] > 5 ? ', …' : '')
-            ));
-        }
+        return ['ok' => true, 'continue' => true, 'phase' => (string) ($work['phase'] ?? 'db')];
+    }
 
-        WWC_Agent_Job_Progress::report(50, 'Dateien in ZIP packen…', true);
-        $zip = self::zip_paths($filesZip, array_keys($fileMap), ABSPATH, 50, 86);
-        if (! $zip['ok']) {
-            self::rrmdir($dir);
-
-            return $zip;
-        }
-        WWC_Agent_Job_Progress::log(
-            'ZIP fertig ('.self::format_bytes((int) ($zip['bytes'] ?? @filesize($filesZip))).', '.(int) ($zip['added'] ?? $fileCount).' Dateien)',
-            88,
-            true
-        );
-
-        WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
-        $manifest = [
-            'id' => $id,
-            'type' => 'full',
-            'label' => $label,
-            'created_at' => gmdate('c'),
-            'wp_version' => get_bloginfo('version'),
-            'site_url' => home_url('/'),
-            'parent_id' => null,
-            'file_count' => $fileCount,
-            'files' => $fileMap,
-            'database' => 'database.sql',
-            'archive' => 'files.zip',
-            'skipped' => ['count' => $skipped['count'], 'bytes' => $skipped['bytes']],
-            'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
-        ];
-        file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
-        $sizeBytes = self::dir_size($dir);
-
-        WWC_Agent_Event_Queue::push('backup_created', 'Full backup '.$id, 'info', ['id' => $id, 'type' => 'full']);
-
-        $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
-        if (! ($offsite['ok'] ?? false)) {
-            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'), 96, true);
-            WWC_Agent_Event_Queue::push('backup_offsite_failed', 'Off-site upload failed for '.$id, 'warning', [
-                'id' => $id,
-                'error' => $offsite['error'] ?? null,
-            ]);
-        }
-        WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt', true);
-
-        return [
-            'ok' => true,
-            'backup' => [
-                'id' => $id,
-                'type' => 'full',
-                'label' => $label,
-                'created_at' => $manifest['created_at'],
-                'size_bytes' => $sizeBytes,
-                'file_count' => $fileCount,
-                'offsite' => (bool) ($offsite['ok'] ?? false),
-            ],
-        ];
+    public static function has_work(string $jobId): bool
+    {
+        return self::load_work($jobId) !== null;
     }
 
     public static function create_incremental(string $label = 'auto', array $options = []): array
@@ -977,58 +944,613 @@ final class WWC_Agent_Backup
 
     private static function export_database(string $targetFile): array
     {
-        global $wpdb;
-        $fh = fopen($targetFile, 'wb');
-        if (! $fh) {
-            return ['ok' => false, 'error' => 'Cannot write database dump'];
-        }
-        fwrite($fh, "-- WWC Agent DB dump\n-- ".gmdate('c')."\nSET NAMES utf8mb4;\nSET foreign_key_checks=0;\n\n");
-        $tables = $wpdb->get_col('SHOW TABLES');
-        if (! is_array($tables)) {
-            fclose($fh);
-
-            return ['ok' => false, 'error' => 'Could not list tables'];
-        }
-        $total = max(1, count($tables));
-        $i = 0;
-        foreach ($tables as $table) {
-            $i++;
-            $create = $wpdb->get_row("SHOW CREATE TABLE `{$table}`", ARRAY_N);
-            if (! $create) {
-                continue;
+        $work = [
+            'dir' => dirname($targetFile),
+            'phase' => 'db',
+            'percent' => 12,
+            'tables' => [],
+            'table_i' => 0,
+            'table_started' => false,
+            'pk' => null,
+            'last_pk' => null,
+            'offset' => 0,
+            'table_total_rows' => 0,
+            'table_done_rows' => 0,
+            'db_header' => false,
+            'db_file' => $targetFile,
+        ];
+        $started = microtime(true);
+        do {
+            $step = self::export_database_slice($work, $started, 3600);
+            if (! ($step['ok'] ?? false)) {
+                return $step;
             }
-            fwrite($fh, "DROP TABLE IF EXISTS `{$table}`;\n{$create[1]};\n\n");
-            $rows = $wpdb->get_results("SELECT * FROM `{$table}`", ARRAY_A);
-            if (! $rows) {
-                if ($i === 1 || $i % 5 === 0 || $i === $total) {
-                    WWC_Agent_Job_Progress::report(12 + (int) round(($i / $total) * 14), 'DB-Export '.$i.'/'.$total.': '.$table);
-                }
-                continue;
-            }
-            foreach ($rows as $row) {
-                $vals = [];
-                foreach ($row as $v) {
-                    if ($v === null) {
-                        $vals[] = 'NULL';
-                    } else {
-                        $vals[] = "'".$wpdb->_real_escape((string) $v)."'";
-                    }
-                }
-                fwrite($fh, 'INSERT INTO `'.$table.'` VALUES ('.implode(',', $vals).");\n");
-            }
-            fwrite($fh, "\n");
-            if ($i === 1 || $i % 5 === 0 || $i === $total) {
-                WWC_Agent_Job_Progress::report(12 + (int) round(($i / $total) * 14), 'DB-Export '.$i.'/'.$total.': '.$table);
-            }
-        }
-        fwrite($fh, "SET foreign_key_checks=1;\n");
-        fclose($fh);
+        } while (($work['phase'] ?? '') === 'db');
 
         return [
             'ok' => true,
-            'tables' => count($tables),
+            'tables' => count($work['tables'] ?? []),
             'bytes' => is_file($targetFile) ? (int) filesize($targetFile) : 0,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string}
+     */
+    private static function export_database_slice(array &$work, float $started, int $budget): array
+    {
+        global $wpdb;
+        $dbFile = (string) ($work['db_file'] ?? ($work['dir'].'/database.sql'));
+        $fh = fopen($dbFile, ! empty($work['db_header']) ? 'ab' : 'wb');
+        if (! $fh) {
+            return ['ok' => false, 'error' => 'Cannot write database dump'];
+        }
+
+        if (empty($work['db_header'])) {
+            fwrite($fh, "-- WWC Agent DB dump\n-- ".gmdate('c')."\nSET NAMES utf8mb4;\nSET foreign_key_checks=0;\n\n");
+            $tables = $wpdb->get_col('SHOW TABLES');
+            if (! is_array($tables) || $tables === []) {
+                fclose($fh);
+
+                return ['ok' => false, 'error' => 'Could not list tables'];
+            }
+            $work['tables'] = array_values(array_filter($tables, static fn ($t) => is_string($t) && preg_match('/^[A-Za-z0-9_]+$/', $t)));
+            $work['db_header'] = true;
+            $work['table_i'] = 0;
+            $work['table_started'] = false;
+            WWC_Agent_Job_Progress::report(12, 'Datenbank exportieren ('.count($work['tables']).' Tabellen)…', true);
+        }
+
+        $tables = $work['tables'] ?? [];
+        $total = max(1, count($tables));
+
+        while ((int) $work['table_i'] < count($tables)) {
+            if (self::slice_exhausted($started, $budget)) {
+                fclose($fh);
+
+                return ['ok' => true];
+            }
+
+            $i = (int) $work['table_i'];
+            $table = (string) $tables[$i];
+
+            if (empty($work['table_started'])) {
+                $create = $wpdb->get_row('SHOW CREATE TABLE `'.$table.'`', ARRAY_N);
+                if (! $create) {
+                    $work['table_i'] = $i + 1;
+                    continue;
+                }
+                fwrite($fh, 'DROP TABLE IF EXISTS `'.$table."`;\n".$create[1].";\n\n");
+                $count = (int) $wpdb->get_var('SELECT COUNT(*) FROM `'.$table.'`');
+                $work['table_started'] = true;
+                $work['table_total_rows'] = $count;
+                $work['table_done_rows'] = 0;
+                $work['offset'] = 0;
+                $work['pk'] = self::table_primary_key($table);
+                $work['last_pk'] = null;
+                $work['percent'] = 12 + (int) round(($i / $total) * 16);
+                WWC_Agent_Job_Progress::report(
+                    (int) $work['percent'],
+                    'DB-Export '.($i + 1).'/'.$total.': '.$table.' ('.$count.' Zeilen)',
+                    true
+                );
+            }
+
+            $chunk = ((int) $work['table_total_rows'] > 80000) ? 80 : 200;
+            $rows = self::fetch_table_chunk($table, $work['pk'] ?? null, $work['last_pk'] ?? null, (int) $work['offset'], $chunk);
+            if ($rows === []) {
+                fwrite($fh, "\n");
+                $work['table_i'] = $i + 1;
+                $work['table_started'] = false;
+                $work['pk'] = null;
+                $work['last_pk'] = null;
+                $work['offset'] = 0;
+                $work['percent'] = 12 + (int) round((($i + 1) / $total) * 16);
+                continue;
+            }
+
+            foreach ($rows as $row) {
+                $vals = [];
+                foreach ($row as $v) {
+                    $vals[] = $v === null ? 'NULL' : "'".$wpdb->_real_escape((string) $v)."'";
+                }
+                fwrite($fh, 'INSERT INTO `'.$table.'` VALUES ('.implode(',', $vals).");\n");
+            }
+
+            $prevPk = $work['last_pk'] ?? null;
+            $work['offset'] = (int) $work['offset'] + count($rows);
+            $work['table_done_rows'] = (int) $work['table_done_rows'] + count($rows);
+            if (is_string($work['pk'] ?? null) && $work['pk'] !== '') {
+                $last = $rows[array_key_last($rows)];
+                $work['last_pk'] = $last[$work['pk']] ?? $work['last_pk'];
+                if ($work['last_pk'] === $prevPk) {
+                    $work['pk'] = null;
+                }
+            }
+
+            $frac = $work['table_total_rows'] > 0
+                ? min(1, $work['table_done_rows'] / $work['table_total_rows'])
+                : 1;
+            $work['percent'] = 12 + (int) round((($i + $frac) / $total) * 16);
+            if ($work['table_total_rows'] > 500 || $work['table_done_rows'] % 400 === 0) {
+                WWC_Agent_Job_Progress::report(
+                    (int) $work['percent'],
+                    'DB '.$table.': '.$work['table_done_rows'].'/'.$work['table_total_rows']
+                );
+            }
+
+            $wpdb->flush();
+            unset($rows);
+        }
+
+        fwrite($fh, "SET foreign_key_checks=1;\n");
+        fclose($fh);
+        $work['phase'] = 'scan';
+        $work['percent'] = 28;
+        WWC_Agent_Job_Progress::log(
+            'Datenbank exportiert ('.count($tables).' Tabellen, '.self::format_bytes((int) @filesize($dbFile)).')',
+            28,
+            true
+        );
+
+        return ['ok' => true];
+    }
+
+    private static function table_primary_key(string $table): ?string
+    {
+        global $wpdb;
+        $keys = $wpdb->get_results('SHOW KEYS FROM `'.$table."` WHERE Key_name = 'PRIMARY'", ARRAY_A);
+        if (! is_array($keys) || count($keys) !== 1) {
+            return null;
+        }
+        $col = $keys[0]['Column_name'] ?? null;
+
+        return is_string($col) && preg_match('/^[A-Za-z0-9_]+$/', $col) ? $col : null;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function fetch_table_chunk(string $table, ?string $pk, mixed $lastPk, int $offset, int $limit): array
+    {
+        global $wpdb;
+        $limit = max(1, min(500, $limit));
+        if (is_string($pk) && $pk !== '') {
+            if ($lastPk === null) {
+                $sql = 'SELECT * FROM `'.$table.'` ORDER BY `'.$pk.'` ASC LIMIT '.$limit;
+            } else {
+                $sql = $wpdb->prepare(
+                    'SELECT * FROM `'.$table.'` WHERE `'.$pk.'` > %s ORDER BY `'.$pk.'` ASC LIMIT %d',
+                    $lastPk,
+                    $limit
+                );
+            }
+        } else {
+            $sql = 'SELECT * FROM `'.$table.'` LIMIT '.$limit.' OFFSET '.max(0, $offset);
+        }
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string}
+     */
+    private static function scan_files_slice(array &$work, float $started, int $budget): array
+    {
+        $settings = self::settings(is_array($work['options'] ?? null) ? $work['options'] : []);
+        $skipped = is_array($work['skipped'] ?? null) ? $work['skipped'] : ['count' => 0, 'bytes' => 0, 'samples' => []];
+        $map = self::read_json_file($work['dir'].'/filemap.json') ?? [];
+        $scanned = (int) ($work['scan_count'] ?? count($map));
+        $last = (string) ($work['scan_last'] ?? '');
+        $skipUntil = $last !== '';
+
+        WWC_Agent_Job_Progress::report((int) ($work['percent'] ?? 32), 'Dateien scannen…', $scanned === 0);
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(ABSPATH, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $file) {
+            if (self::slice_exhausted($started, $budget)) {
+                $work['scan_last'] = $last;
+                $work['scan_count'] = $scanned;
+                $work['skipped'] = $skipped;
+                self::write_json_file($work['dir'].'/filemap.json', $map);
+                $work['percent'] = min(47, 32 + (int) floor($scanned / 800));
+
+                return ['ok' => true];
+            }
+            if (! $file->isFile()) {
+                continue;
+            }
+            $absolute = $file->getRealPath();
+            if ($absolute === false) {
+                continue;
+            }
+            $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen(rtrim(ABSPATH, '/\\')))), '/');
+            if ($skipUntil) {
+                if ($rel === $last) {
+                    $skipUntil = false;
+                }
+                continue;
+            }
+            $last = $rel;
+            if (self::should_skip($rel)) {
+                continue;
+            }
+            $size = (int) $file->getSize();
+            $skipReason = null;
+            $relLower = strtolower($rel);
+            foreach ((array) $settings['excludes'] as $entry) {
+                if ($relLower === $entry || str_starts_with($relLower, $entry.'/')) {
+                    $skipReason = 'exclude';
+                    break;
+                }
+            }
+            if ($skipReason === null && $settings['max_file_bytes'] > 0 && $size > $settings['max_file_bytes']) {
+                $skipReason = 'size';
+            }
+            if ($skipReason !== null) {
+                $skipped['count']++;
+                $skipped['bytes'] += $size;
+                if (count($skipped['samples']) < 10) {
+                    $skipped['samples'][] = $rel.' ('.self::format_bytes($size).')';
+                }
+                continue;
+            }
+            $hash = $size > 20 * 1024 * 1024
+                ? 'size:'.$size.':mtime:'.$file->getMTime()
+                : (md5_file($absolute) ?: ('mtime:'.$file->getMTime()));
+            $map[$rel] = ['hash' => $hash, 'mtime' => (int) $file->getMTime(), 'size' => $size];
+            $scanned++;
+            if ($scanned % 300 === 0) {
+                $work['percent'] = min(47, 32 + (int) floor($scanned / 800));
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Dateien scannen… '.$scanned);
+            }
+        }
+
+        if ($skipUntil) {
+            $work['scan_last'] = '';
+            $work['scan_count'] = $scanned;
+            $work['skipped'] = $skipped;
+            self::write_json_file($work['dir'].'/filemap.json', $map);
+
+            return ['ok' => true];
+        }
+        $work['scan_last'] = $last;
+        $work['scan_count'] = $scanned;
+        $work['skipped'] = $skipped;
+        $work['file_count'] = count($map);
+        self::write_json_file($work['dir'].'/filemap.json', $map);
+        $work['phase'] = 'zip';
+        $work['zip_index'] = 0;
+        $work['percent'] = 48;
+        WWC_Agent_Job_Progress::log($work['file_count'].' Dateien erfasst', 48, true);
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string}
+     */
+    private static function zip_files_slice(array &$work, float $started, int $budget): array
+    {
+        $map = self::read_json_file($work['dir'].'/filemap.json') ?? [];
+        $paths = array_keys($map);
+        $zipFile = $work['dir'].'/files.zip';
+        $from = (int) ($work['zip_index'] ?? 0);
+        if ($from === 0 && $paths === []) {
+            $work['phase'] = 'finish';
+            $work['percent'] = 88;
+
+            return ['ok' => true];
+        }
+
+        $remaining = array_slice($paths, $from);
+        if ($remaining === []) {
+            $work['phase'] = 'finish';
+            $work['percent'] = 88;
+
+            return ['ok' => true];
+        }
+
+        $batch = [];
+        $batchBytes = 0;
+        foreach ($remaining as $rel) {
+            $batch[] = $rel;
+            $batchBytes += (int) ($map[$rel]['size'] ?? 0);
+            if (count($batch) >= 200 || $batchBytes >= 16 * 1024 * 1024) {
+                break;
+            }
+            if (self::slice_exhausted($started, $budget) && $batch !== []) {
+                break;
+            }
+        }
+
+        $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
+        if (! ($append['ok'] ?? false)) {
+            return $append;
+        }
+
+        $work['zip_index'] = $from + count($batch);
+        $total = max(1, count($paths));
+        $work['percent'] = 50 + (int) round(($work['zip_index'] / $total) * 36);
+        WWC_Agent_Job_Progress::report(
+            (int) $work['percent'],
+            'ZIP '.$work['zip_index'].'/'.$total,
+            true
+        );
+
+        if ($work['zip_index'] >= count($paths)) {
+            $work['phase'] = 'finish';
+            $work['percent'] = 88;
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  list<string>  $batch
+     * @return array{ok:bool,error?:string}
+     */
+    private static function zip_append(string $zipFile, array $batch, string $base, bool $create): array
+    {
+        $cli = self::zip_append_cli($zipFile, $batch, $base, $create);
+        if ($cli !== null) {
+            return $cli;
+        }
+
+        return self::zip_append_php($zipFile, $batch, $base, $create);
+    }
+
+    /**
+     * @param  list<string>  $batch
+     * @return array{ok:bool,error?:string}|null
+     */
+    private static function zip_append_cli(string $zipFile, array $batch, string $base, bool $create): ?array
+    {
+        $bin = self::find_binary('zip');
+        if ($bin === null || ! self::shell_available()) {
+            return null;
+        }
+        if ($create && is_file($zipFile)) {
+            @unlink($zipFile);
+        }
+        $listFile = tempnam(sys_get_temp_dir(), 'wwczip');
+        if ($listFile === false) {
+            return ['ok' => false, 'error' => 'Cannot create temp file list'];
+        }
+        file_put_contents($listFile, implode("\n", $batch)."\n");
+        $cwd = rtrim($base, '/\\');
+        $grow = (! $create && is_file($zipFile)) ? ' -g' : '';
+        $cmd = 'cd '.escapeshellarg($cwd).
+            ' && '.escapeshellarg($bin).' -0'.$grow.' -q '.escapeshellarg($zipFile).
+            ' -@ < '.escapeshellarg($listFile).' 2>&1';
+        $out = [];
+        $code = 0;
+        @exec($cmd, $out, $code);
+        @unlink($listFile);
+        if ($code !== 0 && $code !== 12) {
+            return $create ? null : ['ok' => false, 'error' => 'zip CLI failed (code '.$code.')'];
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  list<string>  $batch
+     * @return array{ok:bool,error?:string}
+     */
+    private static function zip_append_php(string $zipFile, array $batch, string $base, bool $create): array
+    {
+        if (! class_exists('ZipArchive')) {
+            return ['ok' => false, 'error' => 'ZipArchive PHP extension missing'];
+        }
+        $base = rtrim($base, '/\\').'/';
+        $zip = new ZipArchive();
+        $flags = $create ? (ZipArchive::CREATE | ZipArchive::OVERWRITE) : ZipArchive::CREATE;
+        if ($zip->open($zipFile, $flags) !== true) {
+            return ['ok' => false, 'error' => 'Cannot open zip'];
+        }
+        foreach ($batch as $rel) {
+            $abs = $base.$rel;
+            if (! is_file($abs)) {
+                continue;
+            }
+            $zip->addFile($abs, $rel);
+            if (method_exists($zip, 'setCompressionName')) {
+                $zip->setCompressionName($rel, ZipArchive::CM_STORE);
+            }
+        }
+        $zip->close();
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,backup?:array<string,mixed>,error?:string}
+     */
+    private static function finish_full(array $work): array
+    {
+        $id = (string) $work['id'];
+        $dir = (string) $work['dir'];
+        $label = (string) ($work['label'] ?? 'manual');
+        $settings = self::settings(is_array($work['options'] ?? null) ? $work['options'] : []);
+        $fileMap = self::read_json_file($dir.'/filemap.json') ?? [];
+        $skipped = is_array($work['skipped'] ?? null) ? $work['skipped'] : ['count' => 0, 'bytes' => 0];
+        $fileCount = count($fileMap);
+
+        WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
+        $manifest = [
+            'id' => $id,
+            'type' => 'full',
+            'label' => $label,
+            'created_at' => gmdate('c'),
+            'wp_version' => get_bloginfo('version'),
+            'site_url' => home_url('/'),
+            'parent_id' => null,
+            'file_count' => $fileCount,
+            'files' => $fileMap,
+            'database' => 'database.sql',
+            'archive' => 'files.zip',
+            'skipped' => ['count' => (int) ($skipped['count'] ?? 0), 'bytes' => (int) ($skipped['bytes'] ?? 0)],
+            'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
+        ];
+        file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
+        @unlink($dir.'/work.json');
+        @unlink($dir.'/filemap.json');
+        $sizeBytes = self::dir_size($dir);
+
+        WWC_Agent_Event_Queue::push('backup_created', 'Full backup '.$id, 'info', ['id' => $id, 'type' => 'full']);
+
+        $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
+        if (! ($offsite['ok'] ?? false)) {
+            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'), 96, true);
+            WWC_Agent_Event_Queue::push('backup_offsite_failed', 'Off-site upload failed for '.$id, 'warning', [
+                'id' => $id,
+                'error' => $offsite['error'] ?? null,
+            ]);
+        }
+        WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt', true);
+
+        return [
+            'ok' => true,
+            'backup' => [
+                'id' => $id,
+                'type' => 'full',
+                'label' => $label,
+                'created_at' => $manifest['created_at'],
+                'size_bytes' => $sizeBytes,
+                'file_count' => $fileCount,
+                'offsite' => (bool) ($offsite['ok'] ?? false),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private static function start_full_work(string $jobId, string $label, array $options): array
+    {
+        WWC_Agent_Job_Progress::report(4, 'Full-Backup starten…', true);
+        WWC_Agent_Job_Progress::log('Backup-ID wird erzeugt, Zielverzeichnis anlegen');
+        $id = 'full-'.gmdate('Ymd-His').'-'.wp_generate_password(6, false, false);
+        $dir = self::root().'/'.$id;
+        wp_mkdir_p($dir);
+        WWC_Agent_Job_Progress::log('Ziel: '.$dir, 6);
+        $work = [
+            'job_id' => $jobId,
+            'id' => $id,
+            'dir' => $dir,
+            'label' => $label,
+            'options' => $options,
+            'phase' => 'db',
+            'percent' => 8,
+            'db_file' => $dir.'/database.sql',
+            'db_header' => false,
+            'tables' => [],
+            'table_i' => 0,
+            'table_started' => false,
+            'skipped' => ['count' => 0, 'bytes' => 0, 'samples' => []],
+        ];
+        self::save_work($jobId, $work);
+
+        return $work;
+    }
+
+    private static function prepare_runtime(): void
+    {
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true);
+        }
+        @set_time_limit(0);
+        @ini_set('memory_limit', '512M');
+        if (function_exists('wp_raise_memory_limit')) {
+            @wp_raise_memory_limit('admin');
+        }
+    }
+
+    private static function slice_budget(): int
+    {
+        return 18;
+    }
+
+    private static function slice_exhausted(float $started, int $budget): bool
+    {
+        $fromRequest = isset($_SERVER['REQUEST_TIME_FLOAT'])
+            ? microtime(true) - (float) $_SERVER['REQUEST_TIME_FLOAT']
+            : (microtime(true) - $started);
+
+        return $fromRequest >= $budget || (microtime(true) - $started) >= $budget;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function load_work(string $jobId): ?array
+    {
+        $map = get_option('wwc_agent_backup_jobs', []);
+        if (! is_array($map) || empty($map[$jobId]['dir'])) {
+            return null;
+        }
+        $work = self::read_json_file(rtrim((string) $map[$jobId]['dir'], '/').'/work.json');
+
+        return is_array($work) ? $work : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     */
+    private static function save_work(string $jobId, array $work): void
+    {
+        $dir = (string) ($work['dir'] ?? '');
+        if ($dir === '') {
+            return;
+        }
+        self::write_json_file($dir.'/work.json', $work);
+        $map = get_option('wwc_agent_backup_jobs', []);
+        if (! is_array($map)) {
+            $map = [];
+        }
+        $map[$jobId] = ['id' => $work['id'] ?? null, 'dir' => $dir, 'updated_at' => time()];
+        if (count($map) > 20) {
+            $map = array_slice($map, -20, null, true);
+        }
+        update_option('wwc_agent_backup_jobs', $map, false);
+    }
+
+    private static function clear_work(string $jobId): void
+    {
+        $map = get_option('wwc_agent_backup_jobs', []);
+        if (is_array($map) && isset($map[$jobId])) {
+            unset($map[$jobId]);
+            update_option('wwc_agent_backup_jobs', $map, false);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function read_json_file(string $path): ?array
+    {
+        if (! is_file($path)) {
+            return null;
+        }
+        $json = json_decode((string) file_get_contents($path), true);
+
+        return is_array($json) ? $json : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private static function write_json_file(string $path, array $data): void
+    {
+        file_put_contents($path, wp_json_encode($data));
     }
 
     private static function format_bytes(int $bytes): string

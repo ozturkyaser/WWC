@@ -88,4 +88,20 @@ class HeartbeatWatchdogTest extends TestCase
         $this->assertNotNull($stuck->fresh()->error);
         $this->assertSame('running', $recent->fresh()->status);
     }
+
+    public function test_stale_backup_job_fails_sooner(): void
+    {
+        $site = $this->makeSite();
+        $backup = AgentJob::create([
+            'organization_id' => $this->org->id,
+            'site_id' => $site->id,
+            'command' => 'backup_full',
+            'status' => 'running',
+        ]);
+        AgentJob::query()->whereKey($backup->id)->update(['updated_at' => now()->subMinutes(25)]);
+
+        $this->artisan('wwc:check-heartbeats')->assertSuccessful();
+
+        $this->assertSame('failed', $backup->fresh()->status);
+    }
 }

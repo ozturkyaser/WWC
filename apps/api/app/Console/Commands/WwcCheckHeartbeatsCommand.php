@@ -49,10 +49,17 @@ class WwcCheckHeartbeatsCommand extends Command
      */
     private function failStuckJobs(): void
     {
+        $backupStuck = AgentJob::query()
+            ->whereIn('status', ['pending', 'running'])
+            ->whereIn('command', ['backup_full', 'backup_incremental', 'backup_scan'])
+            ->where('updated_at', '<', now()->subMinutes(20))
+            ->get();
         $stuck = AgentJob::query()
             ->whereIn('status', ['pending', 'running'])
+            ->whereNotIn('command', ['backup_full', 'backup_incremental', 'backup_scan'])
             ->where('updated_at', '<', now()->subMinutes(90))
-            ->get();
+            ->get()
+            ->merge($backupStuck);
 
         foreach ($stuck as $job) {
             $job->update([

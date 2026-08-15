@@ -100,6 +100,16 @@ export function ProcessBar({
       <div className="process-track" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} role="progressbar">
         <div className="process-fill" style={{ width: `${cancelled ? 0 : failed ? Math.max(pct, 8) : pct}%` }} />
       </div>
+      {active && (() => {
+        const lastAt = log.length ? Date.parse(String(log[log.length - 1]?.at || "")) : 0;
+        const stale = lastAt > 0 && Date.now() - lastAt > 3 * 60 * 1000;
+        return stale ? (
+          <p className="muted" style={{ margin: "8px 0 0", fontSize: "0.85rem" }}>
+            Keine neuen Meldungen seit über 3 Minuten. Der Hoster hat den Vorgang vermutlich
+            abgebrochen – Agent aktualisieren und Backup erneut starten.
+          </p>
+        ) : null;
+      })()}
       {failed && errorText && (
         <div className="process-error" role="alert">
           {errorText}
