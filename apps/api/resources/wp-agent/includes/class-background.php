@@ -215,6 +215,25 @@ final class WWC_Agent_Background
         @ini_set('memory_limit', '512M');
 
         WWC_Agent_Job_Progress::begin($jobId);
+        register_shutdown_function(static function () use ($jobId, $command, $payload): void {
+            $err = error_get_last();
+            if (! is_array($err) || ! in_array((int) $err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+                return;
+            }
+            if ($jobId === '') {
+                return;
+            }
+            $message = 'PHP-Abbruch: '.mb_substr((string) ($err['message'] ?? 'fatal'), 0, 220);
+            if (in_array($command, ['backup_full', 'backup_incremental'], true) && WWC_Agent_Backup::has_work($jobId)) {
+                self::enqueue($jobId, $command, $payload);
+
+                return;
+            }
+            WWC_Agent_Api_Client::request('POST', '/jobs/'.rawurlencode($jobId).'/result', [
+                'status' => 'failed',
+                'error' => $message,
+            ]);
+        });
         try {
             WWC_Agent_Job_Progress::report(3, 'Gestartet: '.$command, true);
 
@@ -246,6 +265,12 @@ final class WWC_Agent_Background
 
             if ($jobId !== '' && self::is_cancelled($jobId)) {
                 throw new WWC_Agent_Cancelled_Exception('Job cancelled');
+            }
+
+            if (! empty($result['continue']) && $jobId !== '') {
+                self::enqueue($jobId, $command, $payload);
+
+                return;
             }
 
             $ok = ! isset($result['ok']) || $result['ok'] !== false;

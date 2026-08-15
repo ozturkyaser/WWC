@@ -1022,6 +1022,18 @@ final class WWC_Agent_Backup
                     continue;
                 }
                 fwrite($fh, 'DROP TABLE IF EXISTS `'.$table."`;\n".$create[1].";\n\n");
+                if (self::skip_table_data($table)) {
+                    fwrite($fh, "-- WWC: Daten übersprungen (Cache/Protokoll): {$table}\n\n");
+                    $work['table_i'] = $i + 1;
+                    $work['table_started'] = false;
+                    $work['percent'] = 12 + (int) round((($i + 1) / $total) * 16);
+                    WWC_Agent_Job_Progress::report(
+                        (int) $work['percent'],
+                        'DB-Export '.($i + 1).'/'.$total.': '.$table.' übersprungen (Cache)',
+                        true
+                    );
+                    continue;
+                }
                 $count = (int) $wpdb->get_var('SELECT COUNT(*) FROM `'.$table.'`');
                 $work['table_started'] = true;
                 $work['table_total_rows'] = $count;
@@ -1037,7 +1049,7 @@ final class WWC_Agent_Backup
                 );
             }
 
-            $chunk = ((int) $work['table_total_rows'] > 80000) ? 80 : 200;
+            $chunk = self::table_chunk_size($table, (int) $work['table_total_rows']);
             $rows = self::fetch_table_chunk($table, $work['pk'] ?? null, $work['last_pk'] ?? null, (int) $work['offset'], $chunk);
             if ($rows === []) {
                 fwrite($fh, "\n");
@@ -1095,6 +1107,45 @@ final class WWC_Agent_Backup
         );
 
         return ['ok' => true];
+    }
+
+    private static function skip_table_data(string $table): bool
+    {
+        $name = strtolower($table);
+        foreach ([
+            'actionscheduler_logs',
+            'woocommerce_sessions',
+            'woocommerce_log',
+            'imagify_files',
+            'imagify_folders',
+            'litespeed_img_optming',
+            'wfhoover',
+            'wfknownfilelist',
+            'wfhits',
+            'wfleechers',
+        ] as $needle) {
+            if (str_contains($name, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function table_chunk_size(string $table, int $rows): int
+    {
+        $name = strtolower($table);
+        if (str_contains($name, 'postmeta') || str_contains($name, 'options') || str_contains($name, 'yoast')) {
+            return $rows > 20000 ? 15 : 40;
+        }
+        if ($rows > 100000) {
+            return 15;
+        }
+        if ($rows > 20000) {
+            return 40;
+        }
+
+        return 120;
     }
 
     private static function table_primary_key(string $table): ?string

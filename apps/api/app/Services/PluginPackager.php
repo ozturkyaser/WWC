@@ -9,10 +9,13 @@ class PluginPackager
 {
     public function sourcePath(): string
     {
-        $candidates = [
+        $repo = rtrim((string) config('wwc.repo_path', ''), '/');
+        $candidates = array_values(array_filter([
+            $repo !== '' ? $repo.'/packages/wp-agent' : null,
             base_path('../../packages/wp-agent'),
+            dirname(base_path(), 2).'/packages/wp-agent',
             resource_path('wp-agent'),
-        ];
+        ]));
 
         foreach ($candidates as $path) {
             if (is_dir($path) && file_exists($path.'/wwc-agent.php')) {

@@ -155,6 +155,7 @@ final class WWC_Agent_Rest
             'delete_backup', 'purge_wwc',
             'staging_create', 'staging_destroy', 'staging_status', 'staging_grant_admin',
             'staging_update_plugin', 'staging_update_theme', 'update_batch', 'staging_promote',
+            'security_harden', 'security_status',
         ];
         if (! in_array($command, $allowed, true)) {
             return new WP_REST_Response(['ok' => false, 'error' => 'Command not allowed'], 400);
@@ -177,6 +178,8 @@ final class WWC_Agent_Rest
         try {
             $result = match ($command) {
                 'ping' => ['ok' => true],
+                'security_harden' => WWC_Agent_Hardening::apply($payload),
+                'security_status' => ['ok' => true, 'status' => WWC_Agent_Hardening::status()],
                 'purge_wwc' => WWC_Agent_Backup::purge_managed(),
                 'delete_backup' => WWC_Agent_Backup::delete((string) ($payload['backup_id'] ?? '')),
                 'list_backups' => WWC_Agent_Backup::list(),
