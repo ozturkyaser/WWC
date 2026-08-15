@@ -20,6 +20,13 @@ class AgentDispatcher
             throw new InvalidArgumentException('Site is not paired.');
         }
 
+        if ($site->isFrozen() && $this->isMutatingCommand($command)) {
+            throw new InvalidArgumentException(
+                'Update-Freeze aktiv bis '.$site->freeze_until?->format('d.m.Y')
+                .($site->freeze_reason ? ' ('.$site->freeze_reason.')' : '')
+            );
+        }
+
         if ($command === 'self_update') {
             $meta = app(PluginPackager::class)->releaseMeta();
             $payload = array_merge([
@@ -46,5 +53,13 @@ class AgentDispatcher
         PushAgentCommandJob::dispatch($job->id);
 
         return $job;
+    }
+
+    private function isMutatingCommand(string $command): bool
+    {
+        return in_array($command, [
+            'update_plugin', 'update_theme', 'update_core', 'update_batch',
+            'staging_promote', 'restore_backup',
+        ], true);
     }
 }

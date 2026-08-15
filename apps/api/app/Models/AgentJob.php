@@ -33,6 +33,8 @@ class AgentJob extends Model
         'update_batch',
         'staging_promote',
         'staging_grant_admin',
+        'security_harden',
+        'security_status',
     ];
 
     protected $fillable = [

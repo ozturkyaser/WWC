@@ -31,6 +31,7 @@ Route::prefix('auth')->group(function () {
         Route::post('2fa/enable', [AuthController::class, 'twoFactorEnable']);
         Route::post('2fa/disable', [AuthController::class, 'twoFactorDisable']);
     });
+    Route::post('invite/accept', [\App\Http\Controllers\Api\TeamController::class, 'accept']);
 });
 
 // Public pairing (one-time code)
@@ -54,7 +55,26 @@ Route::prefix('agent')->middleware(VerifyAgentHmac::class)->group(function () {
 });
 
 Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(function () {
-    Route::get('/dashboard', [SiteController::class, 'dashboard']);
+    Route::get('/dashboard', [\App\Http\Controllers\Api\OpsController::class, 'dashboard']);
+    Route::get('/reviews', [\App\Http\Controllers\Api\OpsController::class, 'reviews']);
+    Route::post('/reviews/{id}/approve', [\App\Http\Controllers\Api\OpsController::class, 'approveReview']);
+    Route::post('/reviews/{id}/dismiss', [\App\Http\Controllers\Api\OpsController::class, 'dismissReview']);
+    Route::post('/sites/bulk', [\App\Http\Controllers\Api\OpsController::class, 'bulk']);
+    Route::post('/sites/{id}/freeze', [\App\Http\Controllers\Api\OpsController::class, 'freeze']);
+    Route::post('/sites/{id}/rollback', [\App\Http\Controllers\Api\OpsController::class, 'rollback']);
+    Route::post('/sites/{id}/probe', [\App\Http\Controllers\Api\OpsController::class, 'probe']);
+    Route::post('/sites/{id}/hardening/policy', [\App\Http\Controllers\Api\OpsController::class, 'applyHardeningPolicy']);
+    Route::put('/hardening-templates', [\App\Http\Controllers\Api\OpsController::class, 'saveHardeningTemplate'])->middleware(RequireAdminRole::class);
+    Route::get('/audit-logs', [\App\Http\Controllers\Api\OpsController::class, 'auditLogs']);
+    Route::get('/projects/{id}/report', [\App\Http\Controllers\Api\OpsController::class, 'monthlyReport']);
+    Route::get('/team', [\App\Http\Controllers\Api\TeamController::class, 'index']);
+    Route::post('/team/invites', [\App\Http\Controllers\Api\TeamController::class, 'invite'])->middleware(RequireAdminRole::class);
+    Route::put('/team/members/{id}', [\App\Http\Controllers\Api\TeamController::class, 'updateRole'])->middleware(RequireAdminRole::class);
+    Route::delete('/team/members/{id}', [\App\Http\Controllers\Api\TeamController::class, 'destroy'])->middleware(RequireAdminRole::class);
+    Route::delete('/team/invites/{id}', [\App\Http\Controllers\Api\TeamController::class, 'revokeInvite'])->middleware(RequireAdminRole::class);
+    Route::get('/time-entries', [\App\Http\Controllers\Api\TimeEntryController::class, 'index']);
+    Route::post('/time-entries', [\App\Http\Controllers\Api\TimeEntryController::class, 'store']);
+    Route::delete('/time-entries/{id}', [\App\Http\Controllers\Api\TimeEntryController::class, 'destroy']);
     Route::get('/plugin/download', [PluginController::class, 'download']);
     Route::get('/organization', [OrganizationController::class, 'show']);
     Route::put('/organization', [OrganizationController::class, 'update'])->middleware(RequireAdminRole::class);
@@ -74,6 +94,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/maintenance/run', [MaintenanceController::class, 'run']);
     Route::post('/sites/{id}/maintenance/runs/{runId}/execute', [MaintenanceController::class, 'executePlan']);
     Route::put('/sites/{id}/backup-schedule', [SiteController::class, 'updateBackupSchedule']);
+    Route::put('/sites/{id}/hardening', [SiteController::class, 'updateHardening']);
     Route::post('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'create']);
     Route::post('/sites/{id}/dev-clone/dry-run', [\App\Http\Controllers\Api\DevCloneController::class, 'dryRun']);
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
@@ -84,6 +105,8 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::get('/clients', [ClientController::class, 'index']);
     Route::post('/clients', [ClientController::class, 'store']);
     Route::get('/clients/{id}', [ClientController::class, 'show']);
+    Route::put('/clients/{id}', [ClientController::class, 'update']);
+    Route::delete('/clients/{id}', [ClientController::class, 'destroy'])->middleware(RequireAdminRole::class);
 
     Route::get('/projects', [ProjectController::class, 'index']);
     Route::post('/projects', [ProjectController::class, 'store']);
@@ -108,6 +131,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/invoices/generate', [InvoiceController::class, 'generate'])->middleware(RequireAdminRole::class);
     Route::get('/invoices/export.csv', [InvoiceController::class, 'exportCsv']);
     Route::get('/invoices/{id}', [InvoiceController::class, 'show']);
+    Route::post('/invoices/{id}/send', [InvoiceController::class, 'send'])->middleware(RequireAdminRole::class);
     Route::post('/invoices/{id}/paid', [InvoiceController::class, 'markPaid'])->middleware(RequireAdminRole::class);
     Route::get('/invoices/{id}/pdf', [InvoiceController::class, 'pdf']);
 });

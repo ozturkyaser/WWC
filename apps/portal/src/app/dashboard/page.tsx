@@ -8,12 +8,30 @@ import { ProcessList } from "@/components/ProcessBar";
 import { Flash, PageHeader, Section } from "@/components/ui";
 import { api } from "@/lib/api";
 
+type QueueItem = {
+  severity: string;
+  kind: string;
+  title: string;
+  detail?: string | null;
+  site_id?: string | null;
+  href: string;
+};
+
 type Dashboard = {
   sites_total: number;
   sites_online: number;
   sites_offline: number;
+  http_down: number;
+  ssl_expiring: number;
+  eol: number;
+  backup_unhealthy: number;
+  hardening_drift: number;
   failed_logins_24h: number;
   open_vulnerabilities: number;
+  needs_review: number;
+  hours_included_month: number;
+  hours_used_month: number;
+  queue: QueueItem[];
   recent_events: Array<{
     id: string;
     type: string;
@@ -52,8 +70,8 @@ export default function DashboardPage() {
   return (
     <Shell>
       <PageHeader
-        title="Übersicht"
-        subtitle="Was gerade Aufmerksamkeit braucht – und der Live-Pulse deiner Sites."
+        title="Leitstand"
+        subtitle="Was heute brennt – Flotte, Backups, Reviews, Stunden."
         actions={<Link className="btn secondary" href="/projects">Neues Projekt</Link>}
       />
       <Flash tone="error">{error}</Flash>
@@ -61,23 +79,58 @@ export default function DashboardPage() {
       {data && (
         <>
           <div className="grid stats" style={{ marginBottom: 28 }}>
+            <div className={`stat ${data.queue.filter((q) => q.severity === "error").length ? "alert" : ""}`}>
+              <div className="stat-value">{data.queue.length}</div>
+              <div className="stat-label">Offene Punkte</div>
+            </div>
+            <div className={`stat ${data.sites_offline + data.http_down > 0 ? "emphasis" : ""}`}>
+              <div className="stat-value">{data.sites_offline + data.http_down}</div>
+              <div className="stat-label">Offline / HTTP down</div>
+            </div>
             <div className={`stat ${data.open_vulnerabilities > 0 ? "alert" : ""}`}>
               <div className="stat-value">{data.open_vulnerabilities}</div>
               <div className="stat-label">Offene Schwachstellen</div>
             </div>
-            <div className={`stat ${data.sites_offline > 0 ? "emphasis" : ""}`}>
-              <div className="stat-value">{data.sites_offline}</div>
-              <div className="stat-label">Offline / pending</div>
+            <div className={`stat ${data.needs_review > 0 ? "emphasis" : ""}`}>
+              <div className="stat-value">{data.needs_review}</div>
+              <div className="stat-label">Reviews</div>
             </div>
             <div className="stat">
-              <div className="stat-value">{data.sites_online}/{data.sites_total}</div>
-              <div className="stat-label">Sites online</div>
+              <div className="stat-value">{data.hours_used_month}/{data.hours_included_month}</div>
+              <div className="stat-label">Stunden diesen Monat</div>
             </div>
-            <div className="stat">
-              <div className="stat-value">{data.failed_logins_24h}</div>
-              <div className="stat-label">Fehl-Logins (24h)</div>
+            <div className={`stat ${data.backup_unhealthy > 0 ? "emphasis" : ""}`}>
+              <div className="stat-value">{data.backup_unhealthy}</div>
+              <div className="stat-label">Backup-Probleme</div>
+            </div>
+            <div className={`stat ${data.ssl_expiring + data.eol > 0 ? "emphasis" : ""}`}>
+              <div className="stat-value">{data.ssl_expiring + data.eol}</div>
+              <div className="stat-label">SSL / EOL</div>
+            </div>
+            <div className={`stat ${data.hardening_drift > 0 ? "emphasis" : ""}`}>
+              <div className="stat-value">{data.hardening_drift}</div>
+              <div className="stat-label">Härtungs-Drift</div>
             </div>
           </div>
+
+          <Section
+            title="Heute"
+            note="Priorisierte Warteschlange über alle Kunden"
+            action={<Link className="btn secondary sm" href="/reviews">Review-Queue</Link>}
+          >
+            {data.queue.length === 0 && <p className="muted" style={{ margin: 0 }}>Nichts Offenes – Flotte ist ruhig.</p>}
+            {data.queue.map((item, i) => (
+              <Link href={item.href} key={`${item.kind}-${item.site_id}-${i}`} className="event-item" style={{ display: "block", textDecoration: "none", color: "inherit" }}>
+                <div className="list-card-top">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <div className="cell-sub">{item.detail}</div>
+                  </div>
+                  <span className={`badge ${item.severity}`}>{item.kind}</span>
+                </div>
+              </Link>
+            ))}
+          </Section>
 
           {(data.active_jobs || []).length > 0 && (
             <Section title="Laufende Prozesse" note="Fortschritt in Echtzeit">
@@ -92,22 +145,14 @@ export default function DashboardPage() {
             </Section>
           )}
 
-          <Section
-            title="Live-Events"
-            note="Neueste Meldungen aus verbundenen Sites"
-            action={<Link className="btn secondary sm" href="/sites">Alle Sites</Link>}
-          >
-            {data.recent_events.length === 0 && (
-              <p className="muted" style={{ margin: 0 }}>Noch keine Events.</p>
-            )}
+          <Section title="Live-Events" note="Neueste Meldungen" action={<Link className="btn secondary sm" href="/sites">Alle Sites</Link>}>
+            {data.recent_events.length === 0 && <p className="muted" style={{ margin: 0 }}>Noch keine Events.</p>}
             {data.recent_events.map((ev) => (
               <div className="event-item" key={ev.id}>
                 <div className="list-card-top">
                   <div>
                     <strong>{ev.title}</strong>
-                    <div className="cell-sub">
-                      {ev.type} · {new Date(ev.occurred_at).toLocaleString("de-DE")}
-                    </div>
+                    <div className="cell-sub">{ev.type} · {new Date(ev.occurred_at).toLocaleString("de-DE")}</div>
                   </div>
                   <span className={`badge ${ev.severity}`}>{ev.severity}</span>
                 </div>

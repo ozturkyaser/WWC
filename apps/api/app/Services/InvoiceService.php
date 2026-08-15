@@ -68,11 +68,26 @@ class InvoiceService
                     'unit_price_cents' => 0,
                 ];
             }
-            if (! empty($scope['hours_included'])) {
+            $included = (float) ($scope['hours_included'] ?? 0);
+            $minutes = (int) \App\Models\TimeEntry::where('project_id', $project->id)
+                ->where('billable', true)
+                ->whereBetween('occurred_at', [$periodStart, $periodEnd])
+                ->sum('minutes');
+            $usedHours = round($minutes / 60, 2);
+            if ($included > 0) {
                 $items[] = [
-                    'description' => "Enthaltene Support-Stunden: {$scope['hours_included']}",
+                    'description' => "Enthaltene Support-Stunden: {$included} (verbraucht: {$usedHours})",
                     'quantity' => 1,
                     'unit_price_cents' => 0,
+                ];
+            }
+            $overage = max(0, $usedHours - $included);
+            if ($overage > 0) {
+                $rate = (int) (($project->organization->billing_profile['overage_rate_cents'] ?? 15000));
+                $items[] = [
+                    'description' => "Mehrarbeit {$overage} Std. à ".number_format($rate / 100, 2, ',', '.').' €',
+                    'quantity' => 1,
+                    'unit_price_cents' => (int) round($overage * $rate),
                 ];
             }
 
@@ -110,7 +125,7 @@ class InvoiceService
 
             $invoice->load(['items', 'client', 'project', 'organization']);
             $pdfPath = $this->renderPdf($invoice);
-            $invoice->update(['pdf_path' => $pdfPath, 'status' => 'sent']);
+            $invoice->update(['pdf_path' => $pdfPath, 'status' => 'draft']);
 
             return $invoice->fresh(['items', 'client', 'project', 'organization']);
         });
@@ -120,6 +135,14 @@ class InvoiceService
         }
 
         return $invoice;
+    }
+
+    public function send(Invoice $invoice): Invoice
+    {
+        $this->sendToClient($invoice);
+        $invoice->update(['status' => 'sent', 'issued_at' => $invoice->issued_at ?? now()]);
+
+        return $invoice->fresh(['items', 'client', 'project']);
     }
 
     public function sendToClient(Invoice $invoice): bool

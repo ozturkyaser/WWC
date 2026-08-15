@@ -13,7 +13,15 @@ class Client extends Model
 
     protected $fillable = [
         'organization_id', 'name', 'email', 'company', 'address', 'vat_id',
+        'phone', 'notes', 'contract_until', 'sla_response_hours',
     ];
+
+    protected function casts(): array
+    {
+        return [
+            'contract_until' => 'date',
+        ];
+    }
 
     public function organization(): BelongsTo
     {

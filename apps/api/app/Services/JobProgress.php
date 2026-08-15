@@ -46,6 +46,8 @@ class JobProgress
             'run_scan' => 'Security-Scan',
             'inventory' => 'Inventory',
             'purge_wwc' => 'Aufräumen',
+            'security_harden' => 'Sicherheits-Härtung',
+            'security_status' => 'Härtungs-Status',
         ];
 
         $title = $labelMap[$job->command] ?? $job->command;

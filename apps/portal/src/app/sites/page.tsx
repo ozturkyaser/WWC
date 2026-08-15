@@ -15,6 +15,8 @@ type Site = {
   wp_version?: string;
   php_version?: string;
   open_findings_count?: number;
+  monitor?: { http_ok?: boolean; ssl_days?: number | null; php?: { status?: string }; wp?: { status?: string } };
+  freeze_until?: string | null;
 };
 
 export default function SitesPage() {
@@ -24,6 +26,7 @@ export default function SitesPage() {
   const [install, setInstall] = useState<InstallInfo | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load() {
     const res = await api<{ data: Site[] }>("/sites");
@@ -64,9 +67,27 @@ export default function SitesPage() {
         title="Sites"
         subtitle="Verbundene WordPress-Installationen – Status, Security und Wartung."
         actions={
-          <button className="btn" type="button" onClick={() => setOpen(true)}>
-            Site verbinden
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            {selected.size > 0 && (
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={async () => {
+                  await api("/sites/bulk", {
+                    method: "POST",
+                    body: JSON.stringify({ site_ids: [...selected], command: "run_scan" }),
+                  });
+                  setSelected(new Set());
+                  await load();
+                }}
+              >
+                Scan ({selected.size})
+              </button>
+            )}
+            <button className="btn" type="button" onClick={() => setOpen(true)}>
+              Site verbinden
+            </button>
+          </div>
         }
       />
 
@@ -80,9 +101,11 @@ export default function SitesPage() {
           <table className="table">
             <thead>
               <tr>
+                <th></th>
                 <th>Site</th>
                 <th>Status</th>
                 <th>Stack</th>
+                <th>Monitor</th>
                 <th>Vulns</th>
                 <th></th>
               </tr>
@@ -90,6 +113,18 @@ export default function SitesPage() {
             <tbody>
               {sites.map((s) => (
                 <tr key={s.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(s.id)}
+                      onChange={() => {
+                        const next = new Set(selected);
+                        if (next.has(s.id)) next.delete(s.id);
+                        else next.add(s.id);
+                        setSelected(next);
+                      }}
+                    />
+                  </td>
                   <td>
                     <Link href={`/sites/${s.id}`} className="cell-title" style={{ color: "var(--text)" }}>
                       {s.name}
@@ -103,6 +138,12 @@ export default function SitesPage() {
                     </span>
                   </td>
                   <td className="muted">WP {s.wp_version || "–"} · PHP {s.php_version || "–"}</td>
+                  <td className="cell-sub">
+                    {s.monitor?.http_ok === false && <span className="badge error">HTTP</span>}
+                    {s.monitor?.ssl_days != null && s.monitor.ssl_days < 21 && <span className="badge warn">SSL {s.monitor.ssl_days}d</span>}
+                    {s.freeze_until && <span className="badge">Freeze</span>}
+                    {s.monitor?.http_ok !== false && !s.freeze_until && "ok"}
+                  </td>
                   <td>
                     <span className={`badge ${(s.open_findings_count || 0) > 0 ? "high" : "online"}`}>
                       {s.open_findings_count ?? 0}

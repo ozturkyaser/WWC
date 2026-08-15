@@ -8,21 +8,28 @@ const groups = [
   {
     label: "Betrieb",
     items: [
-      { href: "/dashboard", label: "Übersicht" },
+      { href: "/dashboard", label: "Leitstand" },
       { href: "/sites", label: "Sites" },
+      { href: "/reviews", label: "Reviews" },
       { href: "/security", label: "Security" },
     ],
   },
   {
     label: "Kunden",
     items: [
+      { href: "/clients", label: "Kunden" },
       { href: "/projects", label: "Projekte" },
+      { href: "/time", label: "Stunden" },
       { href: "/invoices", label: "Rechnungen" },
     ],
   },
   {
     label: "System",
-    items: [{ href: "/settings", label: "Einstellungen" }],
+    items: [
+      { href: "/team", label: "Team" },
+      { href: "/audit", label: "Protokoll" },
+      { href: "/settings", label: "Einstellungen" },
+    ],
   },
 ];
 

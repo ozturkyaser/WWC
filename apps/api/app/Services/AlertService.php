@@ -53,8 +53,27 @@ class AlertService
             ? rtrim((string) config('wwc.portal_url'), '/').$actionPath
             : null;
 
+        $settings = $org->alert_settings ?? [];
+        $roles = $settings['roles'] ?? ['owner', 'admin', 'technician'];
+        $quiet = $settings['quiet_hours'] ?? null;
+        $isCritical = in_array($severity, ['error', 'critical'], true);
+        if (is_array($quiet) && ! $isCritical && ! empty($quiet['from']) && ! empty($quiet['to'])) {
+            $now = now()->format('H:i');
+            $from = $quiet['from'];
+            $to = $quiet['to'];
+            $inQuiet = $from < $to
+                ? ($now >= $from && $now < $to)
+                : ($now >= $from || $now < $to);
+            if ($inQuiet && ($quiet['except_critical'] ?? true)) {
+                return;
+            }
+        }
+
+        $userIds = $org->memberships()
+            ->when($roles !== [], fn ($q) => $q->whereIn('role', $roles))
+            ->pluck('user_id');
         $emails = User::query()
-            ->whereIn('id', $org->memberships()->pluck('user_id'))
+            ->whereIn('id', $userIds)
             ->pluck('email')
             ->filter()
             ->unique()

@@ -41,6 +41,10 @@ class OrganizationController extends Controller
             'hour_packages.*.active' => 'nullable|boolean',
             'hour_packages.*.description' => 'nullable|string|max:500',
             'maintenance_tiers' => 'sometimes|array',
+            'alert_settings' => 'sometimes|array',
+            'alert_settings.roles' => 'sometimes|array',
+            'alert_settings.quiet_hours' => 'sometimes|array',
+            'hardening_templates' => 'sometimes|array',
         ]);
 
         if (isset($data['hour_packages'])) {

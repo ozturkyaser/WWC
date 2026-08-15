@@ -141,6 +141,41 @@ class SiteController extends Controller
         return response()->json(['data' => $site->fresh()]);
     }
 
+    /**
+     * Speichert die gewuenschten Haertungs-Einstellungen und schickt sie als
+     * security_harden-Befehl an den Agent, der sie auf der Site umsetzt.
+     */
+    public function updateHardening(Request $request, string $id, AgentDispatcher $dispatcher)
+    {
+        $orgId = $request->attributes->get('organization_id');
+        $site = Site::where('organization_id', $orgId)->findOrFail($id);
+
+        $data = $request->validate([
+            'hide_login' => 'sometimes|boolean',
+            'login_slug' => 'sometimes|nullable|string|max:60|regex:/^[a-z0-9\-]*$/',
+            'limit_login_attempts' => 'sometimes|boolean',
+            'disable_xmlrpc' => 'sometimes|boolean',
+            'disable_file_edit' => 'sometimes|boolean',
+            'disable_user_enumeration' => 'sometimes|boolean',
+            'hide_wp_version' => 'sometimes|boolean',
+            'security_headers' => 'sometimes|boolean',
+            'disable_pingbacks' => 'sometimes|boolean',
+            'disable_app_passwords' => 'sometimes|boolean',
+            'block_php_uploads' => 'sometimes|boolean',
+            'disable_directory_listing' => 'sometimes|boolean',
+        ]);
+
+        $hardening = $site->hardening ?? [];
+        $settings = array_merge($hardening['settings'] ?? [], $data);
+        $hardening['settings'] = $settings;
+        $site->update(['hardening' => $hardening]);
+
+        $job = $dispatcher->dispatch($site, 'security_harden', $settings, $request->user());
+        AuditLogger::log('site.hardening', $orgId, $request->user(), $site->id, $settings, $request);
+
+        return response()->json(['data' => $site->fresh(), 'job' => $job], 202);
+    }
+
     public function pairingCode(Request $request, string $id, PairingService $pairing)
     {
         $orgId = $request->attributes->get('organization_id');
@@ -215,7 +250,11 @@ class SiteController extends Controller
             $site->save();
         }
 
-        $job = $dispatcher->dispatch($site, $data['command'], $data['payload'] ?? [], $request->user());
+        try {
+            $job = $dispatcher->dispatch($site, $data['command'], $data['payload'] ?? [], $request->user());
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         return response()->json([
             'data' => $job,

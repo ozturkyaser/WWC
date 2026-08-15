@@ -10,6 +10,7 @@ Artisan::command('inspire', function () {
 
 // Offline-Erkennung: Sites ohne aktuellen Heartbeat markieren + benachrichtigen
 Schedule::command('wwc:check-heartbeats')->everyFiveMinutes();
+Schedule::command('wwc:check-uptime')->everyTenMinutes();
 // Geplante Backups (nachts, pro Site versetzt; woechentlich voll, sonst inkrementell)
 Schedule::command('wwc:run-backups')->everyFifteenMinutes();
 // Woechentlicher Restore-Test im Dev-Clone (backup_verify)

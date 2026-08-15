@@ -48,7 +48,7 @@ export default function InvoicesPage() {
       body: JSON.stringify({ project_id: projectId }),
     });
     setTone("ok");
-    setMsg("Rechnung erzeugt und an Kunden-E-Mail gesendet (falls hinterlegt)");
+    setMsg("Entwurf erzeugt – bitte prüfen und dann versenden.");
     await load();
   }
 
@@ -140,6 +140,14 @@ export default function InvoicesPage() {
                   <td>
                     <div className="action-menu">
                       <button className="btn secondary sm" type="button" onClick={() => openPdf(inv.id)}>PDF</button>
+                      {inv.status === "draft" && (
+                        <button className="btn sm" type="button" onClick={async () => {
+                          await api(`/invoices/${inv.id}/send`, { method: "POST" });
+                          setTone("ok");
+                          setMsg("Rechnung versendet");
+                          await load();
+                        }}>Senden</button>
+                      )}
                       {inv.status !== "paid" && (
                         <button className="btn secondary sm" type="button" onClick={() => markPaid(inv.id)}>Bezahlt</button>
                       )}

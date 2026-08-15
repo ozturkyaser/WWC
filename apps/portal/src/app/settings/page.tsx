@@ -35,6 +35,7 @@ type Org = {
     small_business?: boolean;
   };
   patchstack_api_key?: string;
+  alert_settings?: { roles?: string[]; quiet_hours?: { from?: string; to?: string; except_critical?: boolean } };
 };
 
 function TwoFactorSection() {
@@ -248,6 +249,7 @@ export default function SettingsPage() {
           billing_day: org.billing_day,
           billing_profile: org.billing_profile,
           patchstack_api_key: org.patchstack_api_key,
+          alert_settings: org.alert_settings,
           hour_packages: packages,
           maintenance_tiers: tiers.map((t) => ({
             key: t.key,
@@ -497,6 +499,53 @@ export default function SettingsPage() {
             />
             Kleinunternehmer §19 UStG
           </label>
+        </Section>
+
+        <Section title="Benachrichtigungen" note="Wer Mails bekommt und wann Ruhe ist">
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={(org.alert_settings?.roles || ["owner", "admin", "technician"]).includes("technician")}
+              onChange={(e) => {
+                const roles = new Set(org.alert_settings?.roles || ["owner", "admin", "technician"]);
+                if (e.target.checked) roles.add("technician");
+                else roles.delete("technician");
+                setOrg({ ...org, alert_settings: { ...org.alert_settings, roles: [...roles] } });
+              }}
+            />
+            Techniker benachrichtigen
+          </label>
+          <div className="grid form-2" style={{ marginTop: 10 }}>
+            <div className="field">
+              <label>Ruhe von</label>
+              <input
+                type="time"
+                value={org.alert_settings?.quiet_hours?.from || "22:00"}
+                onChange={(e) => setOrg({
+                  ...org,
+                  alert_settings: {
+                    ...org.alert_settings,
+                    quiet_hours: { ...org.alert_settings?.quiet_hours, from: e.target.value, except_critical: true },
+                  },
+                })}
+              />
+            </div>
+            <div className="field">
+              <label>Ruhe bis</label>
+              <input
+                type="time"
+                value={org.alert_settings?.quiet_hours?.to || "07:00"}
+                onChange={(e) => setOrg({
+                  ...org,
+                  alert_settings: {
+                    ...org.alert_settings,
+                    quiet_hours: { ...org.alert_settings?.quiet_hours, to: e.target.value, except_critical: true },
+                  },
+                })}
+              />
+            </div>
+          </div>
+          <p className="muted" style={{ fontSize: 12 }}>Kritische Alarme (offline, HTTP down) kommen trotzdem.</p>
         </Section>
 
         <Section title="Integrationen" note="Optional">

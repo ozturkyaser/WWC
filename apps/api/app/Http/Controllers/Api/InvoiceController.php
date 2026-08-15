@@ -31,11 +31,19 @@ class InvoiceController extends Controller
             'month' => 'nullable|date',
         ]);
 
-        $project = Project::where('organization_id', $orgId)->findOrFail($data['project_id']);
+        $project = Project::where('organization_id', $orgId)->with('organization')->findOrFail($data['project_id']);
         $month = isset($data['month']) ? \Carbon\Carbon::parse($data['month']) : null;
-        $invoice = $service->generateMonthly($project, $month);
+        $invoice = $service->generateMonthly($project, $month, false);
 
         return response()->json(['data' => $invoice], 201);
+    }
+
+    public function send(Request $request, string $id, InvoiceService $service)
+    {
+        $orgId = $request->attributes->get('organization_id');
+        $invoice = Invoice::where('organization_id', $orgId)->findOrFail($id);
+
+        return response()->json(['data' => $service->send($invoice)]);
     }
 
     public function show(Request $request, string $id)

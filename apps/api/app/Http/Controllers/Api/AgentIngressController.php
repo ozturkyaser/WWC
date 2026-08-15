@@ -251,6 +251,19 @@ class AgentIngressController extends Controller
             $stagingPortal->syncFromJobResult($site->fresh(), $job->command, $data['result'] ?? null);
         }
 
+        // Haertungs-Status vom Agent in der Site speichern, damit das Portal
+        // den zuletzt angewendeten Zustand anzeigen kann.
+        if ($data['status'] === 'completed'
+            && in_array($job->command, ['security_harden', 'security_status'], true)
+            && is_array($data['result']['status'] ?? null)
+        ) {
+            $freshSite = $site->fresh();
+            $hardening = $freshSite->hardening ?? [];
+            $hardening['status'] = $data['result']['status'];
+            $hardening['settings'] = $data['result']['status']['settings'] ?? ($hardening['settings'] ?? []);
+            $freshSite->update(['hardening' => $hardening]);
+        }
+
         $onboarding->handleJobResult(
             $site->fresh(),
             $job->command,

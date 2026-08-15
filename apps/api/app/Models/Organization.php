@@ -12,7 +12,7 @@ class Organization extends Model
 
     protected $fillable = [
         'name', 'slug', 'billing_profile', 'hour_packages', 'maintenance_tiers',
-        'patchstack_api_key', 'billing_day',
+        'patchstack_api_key', 'billing_day', 'alert_settings', 'hardening_templates',
     ];
 
     protected function casts(): array
@@ -21,6 +21,8 @@ class Organization extends Model
             'billing_profile' => 'array',
             'hour_packages' => 'array',
             'maintenance_tiers' => 'array',
+            'alert_settings' => 'array',
+            'hardening_templates' => 'array',
         ];
     }
 

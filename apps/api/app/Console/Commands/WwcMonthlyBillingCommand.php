@@ -23,7 +23,10 @@ class WwcMonthlyBillingCommand extends Command
 
                 return;
             }
-            $invoice = $service->generateMonthly($project, null, true);
+            $invoice = $service->generateMonthly($project, null, false);
+            if ((bool) (($project->organization->billing_profile['auto_send_invoices'] ?? false))) {
+                $service->send($invoice);
+            }
             $count++;
             if ($project->client?->email) {
                 $mailed++;

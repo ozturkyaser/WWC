@@ -6,7 +6,7 @@ import { Shell } from "@/components/Shell";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProjectOnboardingWizard } from "@/components/ProjectOnboardingWizard";
 import { Drawer, Empty, Flash, PageHeader } from "@/components/ui";
-import { api, downloadPlugin, downloadSiteBackup } from "@/lib/api";
+import { api, API_URL, downloadPlugin, downloadSiteBackup } from "@/lib/api";
 
 type Client = { id: string; name: string; email?: string };
 type Project = {
@@ -142,20 +142,15 @@ export default function ProjectsPage() {
                     <td>
                       <div className="cell-title">{p.name}</div>
                       <div className="cell-sub">
-                        {site ? (
-                          <>
-                            <Link href={`/sites/${site.id}`} style={{ color: "var(--accent-2)" }}>
-                              {site.name}
-                            </Link>
-                            {" · "}
-                            <span className={`badge ${site.status}`}>{site.status}</span>
-                            {site.onboarding_status && site.onboarding_status !== "done" && (
-                              <> · {site.onboarding_status}</>
-                            )}
-                          </>
-                        ) : (
-                          "Keine Site"
-                        )}
+                        {(p.sites || []).length === 0 && "Keine Site"}
+                        {(p.sites || []).map((st, i) => (
+                          <span key={st.id}>
+                            {i > 0 && " · "}
+                            <Link href={`/sites/${st.id}`} style={{ color: "var(--accent-2)" }}>{st.name}</Link>
+                            {" "}
+                            <span className={`badge ${st.status}`}>{st.status}</span>
+                          </span>
+                        ))}
                       </div>
                     </td>
                     <td>
@@ -170,6 +165,22 @@ export default function ProjectsPage() {
                     </td>
                     <td>
                       <div className="action-menu">
+                        <button
+                          className="btn secondary sm"
+                          type="button"
+                          onClick={async () => {
+                            const token = localStorage.getItem("wwc_token");
+                            const res = await fetch(`${API_URL}/api/projects/${p.id}/report`, {
+                              headers: { Authorization: `Bearer ${token || ""}` },
+                            });
+                            if (!res.ok) return;
+                            const blob = await res.blob();
+                            const url = URL.createObjectURL(blob);
+                            window.open(url, "_blank");
+                          }}
+                        >
+                          Bericht
+                        </button>
                         <button className="btn secondary sm" type="button" onClick={() => toggleAutoFix(p)}>
                           Auto-Fix {p.scope?.auto_apply_safe_updates ? "an" : "aus"}
                         </button>

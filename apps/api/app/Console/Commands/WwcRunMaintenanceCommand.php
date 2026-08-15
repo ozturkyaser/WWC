@@ -37,6 +37,10 @@ class WwcRunMaintenanceCommand extends Command
         }
 
         foreach ($sites as $site) {
+            if ($site->isFrozen()) {
+                $this->warn("Freeze: {$site->name}");
+                continue;
+            }
             $execute = $this->option('audit-only')
                 ? false
                 : ($this->option('execute') ? true : null);

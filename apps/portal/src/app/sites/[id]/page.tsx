@@ -57,6 +57,32 @@ type DevClone = {
   } | null;
 };
 
+type HardeningSettings = {
+  hide_login?: boolean;
+  login_slug?: string;
+  limit_login_attempts?: boolean;
+  disable_xmlrpc?: boolean;
+  disable_file_edit?: boolean;
+  disable_user_enumeration?: boolean;
+  hide_wp_version?: boolean;
+  security_headers?: boolean;
+  disable_pingbacks?: boolean;
+  disable_app_passwords?: boolean;
+  block_php_uploads?: boolean;
+  disable_directory_listing?: boolean;
+};
+
+type Hardening = {
+  settings?: HardeningSettings;
+  status?: {
+    settings?: HardeningSettings;
+    checks?: Record<string, boolean>;
+    login_url?: string;
+    applied_at?: string;
+    notes?: string[];
+  };
+};
+
 type Staging = {
   exists: boolean;
   url?: string | null;
@@ -112,6 +138,18 @@ type SiteDetail = {
     };
     health?: { backups?: Backup[]; staging?: Staging };
     backup_schedule?: BackupSchedule | null;
+    hardening?: Hardening | null;
+    monitor?: {
+      http_ok?: boolean;
+      http_status?: number | null;
+      response_ms?: number;
+      ssl_days?: number | null;
+      php?: { version?: string; status?: string };
+      wp?: { version?: string; status?: string };
+      checked_at?: string;
+    } | null;
+    freeze_until?: string | null;
+    freeze_reason?: string | null;
   };
   server_backups?: ServerBackup[];
   dev_clone?: DevClone | null;
@@ -185,6 +223,29 @@ type ScanReport = {
   settings?: { max_file_mb?: number; excludes?: string[] };
 };
 
+const HARDENING_MEASURES: Array<{ key: keyof HardeningSettings; label: string; note: string }> = [
+  { key: "hide_login", label: "Login-URL verstecken", note: "wp-login.php und wp-admin liefern 404 – Zugang nur über die geheime URL unten." },
+  { key: "limit_login_attempts", label: "Login-Versuche begrenzen", note: "Nach 5 Fehlversuchen wird die IP für 15 Minuten gesperrt (Brute-Force-Schutz)." },
+  { key: "disable_xmlrpc", label: "XML-RPC deaktivieren", note: "Blockiert xmlrpc.php – häufiges Ziel für Brute-Force- und DDoS-Angriffe." },
+  { key: "disable_file_edit", label: "Datei-Editor deaktivieren", note: "Theme-/Plugin-Editor im Admin abschalten, damit kompromittierte Accounts keinen Code ändern können." },
+  { key: "disable_user_enumeration", label: "Benutzer-Enumeration verhindern", note: "Blockiert ?author=1-Abfragen und die öffentliche REST-Benutzerliste." },
+  { key: "hide_wp_version", label: "WordPress-Version verbergen", note: "Entfernt den Generator-Meta-Tag mit der WP-Version aus dem Quelltext." },
+  { key: "security_headers", label: "Security-Header setzen", note: "X-Frame-Options, X-Content-Type-Options, Referrer-Policy und Permissions-Policy." },
+  { key: "disable_pingbacks", label: "Pingbacks/Trackbacks deaktivieren", note: "Verhindert Missbrauch der Pingback-Funktion für Angriffe." },
+  { key: "disable_app_passwords", label: "Application Passwords deaktivieren", note: "Schaltet API-Passwörter ab, wenn sie nicht gebraucht werden." },
+  { key: "block_php_uploads", label: "PHP in Uploads blockieren", note: "Verhindert die Ausführung hochgeladener PHP-Dateien (.htaccess im Uploads-Ordner)." },
+  { key: "disable_directory_listing", label: "Verzeichnislisten deaktivieren", note: "Options -Indexes in der .htaccess – Ordnerinhalte sind nicht mehr einsehbar." },
+];
+
+const HARDENING_CHECK_LABELS: Record<string, { label: string; goodWhen: boolean }> = {
+  wp_debug: { label: "WP_DEBUG aktiv", goodWhen: false },
+  admin_user_exists: { label: "Benutzer „admin“ existiert", goodWhen: false },
+  default_table_prefix: { label: "Standard-Tabellenprefix wp_", goodWhen: false },
+  ssl_active: { label: "SSL aktiv", goodWhen: true },
+  file_edit_constant: { label: "DISALLOW_FILE_EDIT in wp-config", goodWhen: true },
+  uploads_htaccess: { label: "Uploads-.htaccess vorhanden", goodWhen: true },
+};
+
 function formatBytes(n?: number) {
   if (!n) return "–";
   if (n < 1024) return `${n} B`;
@@ -206,6 +267,8 @@ export default function SiteDetailPage() {
   const [scanExcludes, setScanExcludes] = useState<Set<string>>(new Set());
   const [saveScanSettings, setSaveScanSettings] = useState(true);
   const [scanInitId, setScanInitId] = useState("");
+  const [hardDraft, setHardDraft] = useState<HardeningSettings | null>(null);
+  const [hardBusy, setHardBusy] = useState(false);
 
   const latestScanJob = (detail?.jobs || []).find(
     (j) => j.command === "backup_scan" && j.status === "completed"
@@ -293,6 +356,34 @@ export default function SiteDetailPage() {
     }
     await run("update_batch", { mode, items });
     setSelectedUpdates(new Set());
+  }
+
+  useEffect(() => {
+    // Entwurf einmalig aus den gespeicherten Einstellungen befüllen
+    if (detail && hardDraft === null) {
+      setHardDraft({ ...(detail.data.hardening?.settings || {}) });
+    }
+  }, [detail, hardDraft]);
+
+  async function applyHardening() {
+    if (!hardDraft) return;
+    setHardBusy(true);
+    setMsgTone("info");
+    setMsg("");
+    try {
+      await api(`/sites/${params.id}/hardening`, {
+        method: "PUT",
+        body: JSON.stringify(hardDraft),
+      });
+      setMsgTone("ok");
+      setMsg("Härtung wird auf der Website angewendet…");
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setHardBusy(false);
+    }
   }
 
   async function saveBackupSchedule(patch: BackupSchedule) {
@@ -577,6 +668,7 @@ export default function SiteDetailPage() {
           { id: "maintenance", label: "KI-Wartung" },
           { id: "updates", label: `Updates${updates ? ` (${updates})` : ""}` },
           { id: "backups", label: "Backups" },
+          { id: "hardening", label: "Sicherheit" },
           { id: "staging", label: "Development" },
           { id: "activity", label: "Aktivität" },
         ]}
@@ -768,6 +860,58 @@ export default function SiteDetailPage() {
                   className="btn secondary"
                   disabled={busy}
                   type="button"
+                  onClick={async () => {
+                    await api(`/sites/${params.id}/probe`, { method: "POST" });
+                    await load();
+                  }}
+                >
+                  Uptime prüfen
+                </button>
+                <button
+                  className="btn secondary"
+                  disabled={busy}
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm("Letztes Full-Backup zurückspielen?")) return;
+                    await api(`/sites/${params.id}/rollback`, { method: "POST" });
+                    setMsgTone("ok");
+                    setMsg("Rollback gestartet");
+                    await load();
+                  }}
+                >
+                  Rollback
+                </button>
+                {site.freeze_until ? (
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={async () => {
+                      await api(`/sites/${params.id}/freeze`, { method: "POST", body: JSON.stringify({ clear: true }) });
+                      await load();
+                    }}
+                  >
+                    Freeze aufheben
+                  </button>
+                ) : (
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={async () => {
+                      const reason = prompt("Freeze-Grund (z. B. Shop-Friday)", "Wartungsfenster") || "Wartungsfenster";
+                      await api(`/sites/${params.id}/freeze`, {
+                        method: "POST",
+                        body: JSON.stringify({ until: new Date(Date.now() + 7 * 86400000).toISOString(), reason }),
+                      });
+                      await load();
+                    }}
+                  >
+                    7 Tage Freeze
+                  </button>
+                )}
+                <button
+                  className="btn secondary"
+                  disabled={busy}
+                  type="button"
                   onClick={() => run("self_update")}
                 >
                   {detail.agent_release?.update_available
@@ -779,6 +923,10 @@ export default function SiteDetailPage() {
             <div className="surface surface-pad">
               <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>Status</h3>
               <div className="cell-sub" style={{ lineHeight: 1.8 }}>
+                <div>HTTP: {site.monitor?.http_ok === false ? "down" : site.monitor?.http_status || "–"} {site.monitor?.response_ms ? `(${site.monitor.response_ms} ms)` : ""}</div>
+                <div>SSL: {site.monitor?.ssl_days != null ? `${site.monitor.ssl_days} Tage` : "–"}</div>
+                <div>PHP: {site.monitor?.php?.version || site.php_version || "–"} {site.monitor?.php?.status && site.monitor.php.status !== "ok" ? `(${site.monitor.php.status})` : ""}</div>
+                <div>Freeze: {site.freeze_until ? `${new Date(site.freeze_until).toLocaleDateString("de-DE")} · ${site.freeze_reason || ""}` : "aus"}</div>
                 <div>Staging: {staging?.exists ? "aktiv" : "nicht angelegt"}</div>
                 <div>Backups: {backups.length}</div>
                 <div>Core: {site.inventory?.core?.version || "–"}
@@ -1401,6 +1549,126 @@ export default function SiteDetailPage() {
           </table>
         </div>
       )}
+
+      {tab === "hardening" && (() => {
+        const hardening = detail.data.hardening;
+        const status = hardening?.status;
+        const draft = hardDraft || {};
+        const hardJob = (detail.active_jobs || []).find((j) => j.command === "security_harden");
+        return (
+          <div className="surface surface-pad">
+            <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>Sicherheits-Härtung</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Maßnahmen auswählen und anwenden – der Agent setzt sie direkt auf der WordPress-Installation um.
+              Alle Maßnahmen sind umkehrbar (Schalter aus + erneut anwenden).
+            </p>
+
+            {hardJob?.progress_ui && (
+              <div style={{ marginBottom: 12 }}>
+                <ProcessBar progress={hardJob.progress_ui} jobId={hardJob.id} />
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {HARDENING_MEASURES.map((m) => (
+                <div key={m.key} className="surface surface-pad" style={{ background: "rgba(10,14,18,0.35)" }}>
+                  <label className="row" style={{ gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      style={{ marginTop: 3 }}
+                      checked={Boolean(draft[m.key])}
+                      disabled={hardBusy}
+                      onChange={(e) => setHardDraft({ ...draft, [m.key]: e.target.checked })}
+                    />
+                    <span>
+                      <strong>{m.label}</strong>
+                      {status?.settings?.[m.key] && <span className="badge ok" style={{ marginLeft: 8 }}>aktiv</span>}
+                      <br />
+                      <span className="muted" style={{ fontSize: "0.85rem" }}>{m.note}</span>
+                    </span>
+                  </label>
+                  {m.key === "hide_login" && draft.hide_login && (
+                    <div className="field" style={{ marginTop: 10, marginBottom: 0, maxWidth: 360 }}>
+                      <label>Geheimer Login-Pfad</label>
+                      <input
+                        value={draft.login_slug || ""}
+                        placeholder="z. B. mein-zugang (leer = automatisch)"
+                        onChange={(e) =>
+                          setHardDraft({ ...draft, login_slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })
+                        }
+                      />
+                      {status?.login_url && status?.settings?.hide_login && (
+                        <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                          Aktuelle Login-URL: <a href={status.login_url} target="_blank" rel="noreferrer">{status.login_url}</a>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="row" style={{ marginTop: 14, gap: 10, alignItems: "center" }}>
+              <button className="btn" type="button" disabled={hardBusy || busy} onClick={applyHardening}>
+                Auf Website anwenden
+              </button>
+              <button
+                className="btn secondary"
+                type="button"
+                disabled={hardBusy || busy}
+                onClick={async () => {
+                  setHardBusy(true);
+                  try {
+                    await api(`/sites/${params.id}/hardening/policy`, { method: "POST" });
+                    setMsgTone("ok");
+                    setMsg("Tarif-Soll angewendet");
+                    await load();
+                  } finally {
+                    setHardBusy(false);
+                  }
+                }}
+              >
+                Tarif-Soll anwenden
+              </button>
+              {status?.applied_at && (
+                <span className="muted" style={{ fontSize: "0.85rem" }}>
+                  Zuletzt angewendet: {new Date(status.applied_at).toLocaleString("de-DE")}
+                </span>
+              )}
+            </div>
+
+            {(status?.notes?.length || 0) > 0 && (
+              <div style={{ marginTop: 10 }}>
+                {status!.notes!.map((n, i) => (
+                  <p key={i} className="error" style={{ margin: "4px 0" }}>{n}</p>
+                ))}
+              </div>
+            )}
+
+            {status?.checks && (
+              <div style={{ marginTop: 18 }}>
+                <h4 style={{ marginBottom: 8 }}>Zusätzliche Prüfungen</h4>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {Object.entries(status.checks).map(([key, value]) => {
+                    const def = HARDENING_CHECK_LABELS[key];
+                    if (!def) return null;
+                    const good = value === def.goodWhen;
+                    return (
+                      <span key={key} className={`badge ${good ? "ok" : "warn"}`}>
+                        {def.label}: {value ? "ja" : "nein"}
+                      </span>
+                    );
+                  })}
+                </div>
+                <p className="muted" style={{ fontSize: "0.8rem", marginTop: 8 }}>
+                  Diese Punkte kann der Agent nicht automatisch ändern (z. B. wp-config.php, Datenbank-Prefix) –
+                  gelbe Einträge sollten manuell geprüft werden.
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {tab === "staging" && (
         <div className="surface surface-pad">

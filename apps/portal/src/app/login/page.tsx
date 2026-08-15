@@ -12,12 +12,26 @@ export default function LoginPage() {
   const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [inviteToken] = useState(() =>
+    typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("invite") || "" : ""
+  );
+  const [inviteName, setInviteName] = useState("");
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
     try {
+      if (inviteToken) {
+        const res = await api<{ token: string }>("/auth/invite/accept", {
+          method: "POST",
+          auth: false,
+          body: JSON.stringify({ token: inviteToken, name: inviteName || email, password }),
+        });
+        setToken(res.token);
+        router.push("/dashboard");
+        return;
+      }
       const res = await api<{ token?: string; requires_2fa?: boolean }>("/auth/login", {
         method: "POST",
         auth: false,
@@ -59,8 +73,14 @@ export default function LoginPage() {
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={onSubmit}>
         <h1>WWC</h1>
-        <p className="muted">Wartungsportal anmelden</p>
-        <div className="field" style={{ marginTop: 24 }}>
+        <p className="muted">{inviteToken ? "Einladung annehmen" : "Wartungsportal anmelden"}</p>
+        {inviteToken && (
+          <div className="field" style={{ marginTop: 24 }}>
+            <label htmlFor="name">Name</label>
+            <input id="name" value={inviteName} onChange={(e) => setInviteName(e.target.value)} required />
+          </div>
+        )}
+        <div className="field" style={{ marginTop: inviteToken ? 0 : 24 }}>
           <label htmlFor="email">E-Mail</label>
           <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </div>

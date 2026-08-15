@@ -22,7 +22,8 @@ class Site extends Model
         'onboarding_status', 'onboarding_meta',
         'maintenance_agent_enabled', 'maintenance_cadence', 'maintenance_auto_apply',
         'maintenance_last_run_at', 'maintenance_next_run_at', 'maintenance_agent_meta',
-        'backup_schedule', 'backup_last_scheduled_at', 'dev_clone',
+        'backup_schedule', 'backup_last_scheduled_at', 'dev_clone', 'hardening',
+        'monitor', 'freeze_until', 'freeze_reason',
     ];
 
     protected $hidden = [
@@ -49,7 +50,15 @@ class Site extends Model
             'backup_schedule' => 'array',
             'backup_last_scheduled_at' => 'datetime',
             'dev_clone' => 'array',
+            'hardening' => 'array',
+            'monitor' => 'array',
+            'freeze_until' => 'datetime',
         ];
+    }
+
+    public function isFrozen(): bool
+    {
+        return $this->freeze_until !== null && $this->freeze_until->isFuture();
     }
 
     public function organization(): BelongsTo
