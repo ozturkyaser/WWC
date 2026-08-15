@@ -87,6 +87,7 @@ class OpsBoardService
 
                     return $row;
                 }),
+            'release' => app(ReleaseService::class)->status(),
         ];
     }
 

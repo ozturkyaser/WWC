@@ -45,12 +45,40 @@ type Dashboard = {
     site_name?: string;
     progress_ui?: { percent: number; label?: string; title?: string; status?: string };
   }>;
+  release?: ReleaseInfo;
+};
+
+type ReleaseInfo = {
+  name?: string;
+  version?: string;
+  agent_version?: string;
+  repo_available?: boolean;
+  git?: {
+    available?: boolean;
+    version?: string;
+    short_sha?: string;
+    sha?: string;
+    branch?: string;
+    subject?: string;
+    committed_at?: string | null;
+    dirty?: boolean;
+    behind?: number | null;
+    ahead?: number | null;
+    update_available?: boolean;
+    compare_error?: string | null;
+    remote_branch?: string;
+  };
+  deploy?: { status?: string; message?: string | null; log?: string[]; at?: string | null };
 };
 
 export default function DashboardPage() {
   const router = useRouter();
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
+  const [deployMsg, setDeployMsg] = useState("");
+  const [deployTone, setDeployTone] = useState<"info" | "ok" | "error">("info");
+  const [deploying, setDeploying] = useState(false);
+  const [forceDeploy, setForceDeploy] = useState(false);
 
   useEffect(() => {
     api<Dashboard>("/dashboard")
@@ -75,9 +103,37 @@ export default function DashboardPage() {
         actions={<Link className="btn secondary" href="/projects">Neues Projekt</Link>}
       />
       <Flash tone="error">{error}</Flash>
+      <Flash tone={deployTone}>{deployMsg}</Flash>
 
       {data && (
         <>
+          <ReleaseBar
+            release={data.release}
+            deploying={deploying}
+            force={forceDeploy}
+            onForce={setForceDeploy}
+            onDeploy={async () => {
+              setDeploying(true);
+              setDeployTone("info");
+              setDeployMsg("Deploy von Git läuft…");
+              try {
+                const res = await api<{ ok: boolean; message: string; status?: ReleaseInfo }>(
+                  "/release/deploy",
+                  { method: "POST", body: JSON.stringify({ force: forceDeploy }) }
+                );
+                setDeployTone(res.ok ? "ok" : "error");
+                setDeployMsg(res.message);
+                const next = await api<Dashboard>("/dashboard");
+                setData(next);
+              } catch (e) {
+                setDeployTone("error");
+                setDeployMsg(e instanceof Error ? e.message : "Deploy fehlgeschlagen");
+              } finally {
+                setDeploying(false);
+              }
+            }}
+          />
+
           <div className="grid stats" style={{ marginBottom: 28 }}>
             <div className={`stat ${data.queue.filter((q) => q.severity === "error").length ? "alert" : ""}`}>
               <div className="stat-value">{data.queue.length}</div>
@@ -162,5 +218,61 @@ export default function DashboardPage() {
         </>
       )}
     </Shell>
+  );
+}
+
+function ReleaseBar({
+  release,
+  deploying,
+  force,
+  onForce,
+  onDeploy,
+}: {
+  release?: ReleaseInfo;
+  deploying: boolean;
+  force: boolean;
+  onForce: (v: boolean) => void;
+  onDeploy: () => void;
+}) {
+  const git = release?.git;
+  const behind = git?.behind ?? 0;
+  const update = Boolean(git?.update_available);
+  const version = release?.version || git?.version || "–";
+  const when = git?.committed_at ? new Date(git.committed_at).toLocaleString("de-DE") : null;
+
+  return (
+    <div className="surface surface-pad" style={{ marginBottom: 22 }}>
+      <div className="list-card-top" style={{ alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <strong>Software {version}</strong>
+            {git?.short_sha && <span className="badge">{git.branch || "git"} · {git.short_sha}</span>}
+            {update ? (
+              <span className="badge warn">{behind} Commit{behind === 1 ? "" : "s"} auf Git neuer</span>
+            ) : git?.available ? (
+              <span className="badge ok">aktuell</span>
+            ) : (
+              <span className="badge">Git nicht lesbar</span>
+            )}
+            {git?.dirty && <span className="badge warn">lokale Änderungen</span>}
+          </div>
+          <div className="cell-sub" style={{ marginTop: 6 }}>
+            {git?.subject || "Kein Git-Stand"}
+            {when ? ` · ${when}` : ""}
+            {release?.agent_version ? ` · Agent ${release.agent_version}` : ""}
+          </div>
+          {git?.compare_error && <div className="cell-sub">{git.compare_error}</div>}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+          <button className="btn" type="button" disabled={deploying} onClick={onDeploy}>
+            {deploying ? "Deploy läuft…" : "Von Git neu deployen"}
+          </button>
+          <label className="row" style={{ gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+            <input type="checkbox" checked={force} onChange={(e) => onForce(e.target.checked)} />
+            Lokale Änderungen verwerfen
+          </label>
+        </div>
+      </div>
+    </div>
   );
 }

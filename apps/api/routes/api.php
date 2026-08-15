@@ -56,6 +56,8 @@ Route::prefix('agent')->middleware(VerifyAgentHmac::class)->group(function () {
 
 Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(function () {
     Route::get('/dashboard', [\App\Http\Controllers\Api\OpsController::class, 'dashboard']);
+    Route::get('/release', [\App\Http\Controllers\Api\ReleaseController::class, 'show']);
+    Route::post('/release/deploy', [\App\Http\Controllers\Api\ReleaseController::class, 'deploy'])->middleware(RequireAdminRole::class);
     Route::get('/reviews', [\App\Http\Controllers\Api\OpsController::class, 'reviews']);
     Route::post('/reviews/{id}/approve', [\App\Http\Controllers\Api\OpsController::class, 'approveReview']);
     Route::post('/reviews/{id}/dismiss', [\App\Http\Controllers\Api\OpsController::class, 'dismissReview']);

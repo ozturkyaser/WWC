@@ -2,6 +2,9 @@
 
 return [
     'agent_version' => env('WWC_AGENT_VERSION', '0.6.1'),
+    'repo_path' => env('WWC_REPO_PATH', base_path('../..')),
+    'deploy_remote' => env('WWC_DEPLOY_REMOTE', 'origin'),
+    'deploy_branch' => env('WWC_DEPLOY_BRANCH', 'main'),
     'agent_update_public_key' => env('WWC_AGENT_UPDATE_PUBLIC_KEY'),
     // Public URL WordPress sites should use (LAN IP recommended for local WP/VMs)
     'public_api_url' => env('WWC_PUBLIC_API_URL', env('APP_URL', 'http://localhost:8081')),
