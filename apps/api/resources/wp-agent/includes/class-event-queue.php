@@ -6,21 +6,33 @@ final class WWC_Agent_Event_Queue
 {
     private const OPTION = 'wwc_agent_event_queue';
 
+    private static bool $writing = false;
+
     public static function push(string $type, string $title, string $severity = 'info', array $payload = []): void
     {
-        $queue = get_option(self::OPTION, []);
-        $queue[] = [
-            'type' => $type,
-            'title' => $title,
-            'severity' => $severity,
-            'payload' => $payload,
-            'occurred_at' => gmdate('c'),
-        ];
-        // Keep last 200
-        if (count($queue) > 200) {
-            $queue = array_slice($queue, -200);
+        if (self::$writing) {
+            return;
         }
-        update_option(self::OPTION, $queue, false);
+        self::$writing = true;
+        try {
+            $queue = get_option(self::OPTION, []);
+            if (! is_array($queue)) {
+                $queue = [];
+            }
+            $queue[] = [
+                'type' => $type,
+                'title' => $title,
+                'severity' => $severity,
+                'payload' => $payload,
+                'occurred_at' => gmdate('c'),
+            ];
+            if (count($queue) > 200) {
+                $queue = array_slice($queue, -200);
+            }
+            update_option(self::OPTION, $queue, false);
+        } finally {
+            self::$writing = false;
+        }
     }
 
     public static function drain(): array

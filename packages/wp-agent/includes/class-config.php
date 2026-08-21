@@ -32,6 +32,10 @@ final class WWC_Agent_Config
     public static function update(array $values): void
     {
         $current = self::all();
+        if (function_exists('remove_action')) {
+            remove_action('updated_option', ['WWC_Agent_Activity', 'option_updated'], 10);
+            remove_action('add_option', ['WWC_Agent_Activity', 'option_added'], 10);
+        }
         update_option(self::OPTION, array_merge($current, $values), false);
     }
 

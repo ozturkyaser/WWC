@@ -22,6 +22,7 @@ if (! $wwcQuiet) {
 
 @ini_set('display_errors', '0');
 @ini_set('html_errors', '0');
+@ini_set('memory_limit', '768M');
 if (ob_get_level() === 0) {
     ob_start();
 }

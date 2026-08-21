@@ -240,8 +240,23 @@ final class WWC_Agent_Activity
             'permalink_structure', 'active_plugins', 'template', 'stylesheet',
             'WPLANG', 'blog_public', 'upload_path',
         ];
+        if (in_array($option, $watch, true)) {
+            return true;
+        }
+        // Never log our own options: event_queue writes would recurse until OOM,
+        // and wwc_agent_settings holds the HMAC secret.
+        $skip = [
+            'wwc_agent_event_queue',
+            'wwc_agent_settings',
+            'wwc_agent_backup_jobs',
+            'wwc_agent_backup_settings',
+            'wwc_agent_staging_access',
+        ];
+        if (in_array($option, $skip, true) || str_starts_with($option, 'wwc_agent_')) {
+            return false;
+        }
 
-        return in_array($option, $watch, true) || str_starts_with($option, 'wwc_');
+        return str_starts_with($option, 'wwc_');
     }
 
     private static function ip(): ?string
