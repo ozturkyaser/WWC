@@ -239,7 +239,7 @@ final class WWC_Agent_Background
 
             $result = match ($command) {
                 'ping' => ['ok' => true],
-                'inventory' => WWC_Agent_Collector::inventory(),
+                'inventory' => WWC_Agent_Collector::inventory(true),
                 'update_plugin' => WWC_Agent_Updater::update_plugin((string) ($payload['slug'] ?? $payload['file'] ?? '')),
                 'update_theme' => WWC_Agent_Updater::update_theme((string) ($payload['slug'] ?? $payload['stylesheet'] ?? '')),
                 'update_core' => WWC_Agent_Updater::update_core(),

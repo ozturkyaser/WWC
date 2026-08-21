@@ -109,7 +109,7 @@ final class WWC_Agent_Admin
                             <td><input class="regular-text" type="text" name="code" id="code" required placeholder="XXXXXX-XXXXXX" autocomplete="off"></td>
                         </tr>
                     </table>
-                    <?php submit_button('Verbinden & synchronisieren'); ?>
+                    <?php submit_button('Verbinden'); ?>
                 </form>
             <?php endif; ?>
         </div>
@@ -132,18 +132,22 @@ final class WWC_Agent_Admin
         if (is_wp_error($result)) {
             self::redirect(['error' => $result->get_error_message()]);
         }
+        if (! WWC_Agent_Config::is_paired()) {
+            self::redirect(['error' => 'Pairing am Portal ok, Schlüssel konnte lokal nicht gespeichert werden. Bitte erneut verbinden.']);
+        }
 
-        $sync = WWC_Agent_Heartbeat::send(true);
-        if (is_wp_error($sync)) {
-            WWC_Agent_Config::update(['last_error' => $sync->get_error_message()]);
-            self::redirect([
-                'paired' => '1',
-                'error' => 'Verbunden, aber Sync fehlgeschlagen: '.$sync->get_error_message(),
-            ]);
+        // Do not inventory/backup-scan in this request: cuno-sized sites OOM and
+        // WordPress shows a critical error on admin-post.php while the portal already
+        // thinks the site is paired.
+        if (! wp_next_scheduled('wwc_agent_heartbeat')) {
+            wp_schedule_single_event(time() + 10, 'wwc_agent_heartbeat');
+        }
+        if (function_exists('wwc_agent_spawn_cron_hint')) {
+            wwc_agent_spawn_cron_hint();
         }
 
         WWC_Agent_Config::update(['last_error' => '']);
-        self::redirect(['paired' => '1', 'notice' => 'Verbunden und synchronisiert.']);
+        self::redirect(['paired' => '1', 'notice' => 'Verbunden. Synchronisierung läuft im Hintergrund.']);
     }
 
     public static function handle_sync(): void

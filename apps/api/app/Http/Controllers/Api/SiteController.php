@@ -114,6 +114,7 @@ class SiteController extends Controller
             'maintenance' => $maintenance->payloadForSite($site),
             'server_backups' => $serverBackups,
             'dev_clone' => app(\App\Services\DevCloneService::class)->payload($site),
+            'agent_synced' => is_array($site->inventory) && $site->inventory !== [],
         ]);
     }
 
@@ -248,6 +249,23 @@ class SiteController extends Controller
         if ($data['command'] === 'staging_create' && ! $site->staging_slug) {
             $site->staging_slug = $staging->uniqueSlug($site);
             $site->save();
+        }
+
+        try {
+            app(\App\Services\AgentClient::class)->ping($site);
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'wwc_unpaired') || str_contains($msg, 'HTTP 401')) {
+                $apiUrl = rtrim((string) config('wwc.public_api_url', config('app.url')), '/');
+
+                return response()->json([
+                    'message' => 'Der Agent auf der Website ist nicht verbunden. „Neu verbinden“ klicken, dann in WordPress unter Einstellungen → WWC Agent den neuen Code eintragen. API-URL: '.$apiUrl,
+                ], 409);
+            }
+
+            return response()->json([
+                'message' => 'Agent nicht erreichbar: '.$msg,
+            ], 502);
         }
 
         try {

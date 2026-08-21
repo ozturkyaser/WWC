@@ -3,7 +3,7 @@
  * Plugin Name: WWC Agent
  * Plugin URI: https://wwc.local
  * Description: Sicheres Remote-Management-Agent-Plugin für die WWC Wartungsplattform.
- * Version: 0.6.3
+ * Version: 0.6.4
  * Requires at least: 6.0
  * Requires PHP: 8.1
  * Author: WWC
@@ -21,7 +21,7 @@ if (defined('WWC_AGENT_DISABLED') && WWC_AGENT_DISABLED) {
     return;
 }
 
-define('WWC_AGENT_VERSION', '0.6.3');
+define('WWC_AGENT_VERSION', '0.6.4');
 define('WWC_AGENT_FILE', __FILE__);
 define('WWC_AGENT_DIR', plugin_dir_path(__FILE__));
 define('WWC_AGENT_URL', plugin_dir_url(__FILE__));

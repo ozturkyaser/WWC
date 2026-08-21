@@ -16,7 +16,7 @@ final class WWC_Agent_Backup
         return $dir;
     }
 
-    public static function list(): array
+    public static function list(bool $includeSizes = true): array
     {
         $items = [];
         foreach (glob(self::root().'/*/manifest.json') ?: [] as $manifestFile) {
@@ -26,8 +26,9 @@ final class WWC_Agent_Backup
             }
             $dir = dirname($manifestFile);
             $json['path'] = $dir;
-            // Off-site backups keep only manifest.json locally – size comes from the manifest
-            if (empty($json['offsite']) || empty($json['size_bytes'])) {
+            // Off-site backups keep only manifest.json locally – size comes from the manifest.
+            // Heartbeats skip dir_size(): walking a partial backup tree can exhaust PHP memory.
+            if ($includeSizes && (empty($json['offsite']) || empty($json['size_bytes']))) {
                 $json['size_bytes'] = self::dir_size($dir);
             }
             $json['offsite'] = ! empty($json['offsite']);

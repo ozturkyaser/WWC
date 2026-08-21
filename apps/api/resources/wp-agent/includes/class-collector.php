@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 final class WWC_Agent_Collector
 {
-    public static function inventory(): array
+    public static function inventory(bool $refreshUpdates = false): array
     {
         if (! function_exists('get_plugins')) {
             require_once ABSPATH.'wp-admin/includes/plugin.php';
         }
         require_once ABSPATH.'wp-admin/includes/update.php';
-        wp_update_plugins();
-        wp_update_themes();
+        if ($refreshUpdates) {
+            wp_update_plugins();
+            wp_update_themes();
+        }
 
         $plugin_updates = get_site_transient('update_plugins');
         $theme_updates = get_site_transient('update_themes');

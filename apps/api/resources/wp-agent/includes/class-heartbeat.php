@@ -16,6 +16,18 @@ final class WWC_Agent_Heartbeat
 
     public static function send(bool $includeInventory = true): array|WP_Error
     {
+        try {
+            return self::sendUncaught($includeInventory);
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            WWC_Agent_Config::update(['last_error' => $msg]);
+
+            return new WP_Error('wwc_heartbeat', $msg);
+        }
+    }
+
+    private static function sendUncaught(bool $includeInventory = true): array|WP_Error
+    {
         if (! WWC_Agent_Config::is_paired()) {
             return new WP_Error('wwc_unpaired', 'Agent is not paired');
         }
@@ -26,13 +38,13 @@ final class WWC_Agent_Heartbeat
             'php_version' => PHP_VERSION,
             'agent_version' => WWC_AGENT_VERSION,
             'health' => array_merge(WWC_Agent_Collector::health(), [
-                'backups' => WWC_Agent_Backup::list()['backups'] ?? [],
+                'backups' => WWC_Agent_Backup::list(false)['backups'] ?? [],
                 'staging' => WWC_Agent_Staging::status(),
             ]),
             'events' => $events,
         ];
         if ($includeInventory) {
-            $payload['inventory'] = WWC_Agent_Collector::inventory();
+            $payload['inventory'] = WWC_Agent_Collector::inventory(false);
         }
 
         $result = WWC_Agent_Api_Client::request('POST', '/heartbeat', $payload);

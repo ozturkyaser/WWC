@@ -195,6 +195,7 @@ type SiteDetail = {
       url?: string;
     } | null;
   }>;
+  agent_synced?: boolean;
   agent_release?: {
     latest?: string;
     update_available?: boolean;
@@ -716,6 +717,13 @@ export default function SiteDetailPage() {
       </div>
 
       <Flash tone={msgTone}>{msg}</Flash>
+      {!detail.agent_synced && !install && (
+        <Flash tone="error">
+          Portal zeigt „verbunden“, aber der Agent auf der Website hat keine Plugin-Liste geliefert.
+          Oben „Neu verbinden“ klicken, in WordPress unter Einstellungen → WWC Agent den neuen Code eintragen
+          (API-URL nicht die LAN-IP, sondern die URL aus dem Wizard). Danach erscheinen Updates und Backups.
+        </Flash>
+      )}
       {install && <div style={{ marginBottom: 16 }}><InstallWizard install={install} /></div>}
 
       <Tabs

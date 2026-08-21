@@ -41,6 +41,10 @@ final class WWC_Agent_Rest
         $route = is_object($request) && method_exists($request, 'get_route') ? (string) $request->get_route() : '';
         if (str_starts_with($route, '/wwc/')) {
             @ini_set('display_errors', '0');
+            if (! headers_sent()) {
+                header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+                header('Pragma: no-cache');
+            }
             while (ob_get_level() > 0) {
                 ob_end_clean();
             }
@@ -132,7 +136,7 @@ final class WWC_Agent_Rest
 
     public static function inventory(): WP_REST_Response
     {
-        return new WP_REST_Response(WWC_Agent_Collector::inventory());
+        return new WP_REST_Response(WWC_Agent_Collector::inventory(false));
     }
 
     public static function cancel(WP_REST_Request $request): WP_REST_Response
