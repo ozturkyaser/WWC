@@ -23,13 +23,11 @@ class ConnectionController extends Controller
         ])));
 
         return response()->json([
-            'recommended_api_url' => $public,
+            'recommended_api_url' => $public !== '' ? $public : 'https://wwc.kiservicehub.de',
             'suggested_api_urls' => $candidates,
             'tips' => [
-                'Online-WordPress braucht eine öffentlich erreichbare API (HTTPS). Lokal: ./scripts/start-tunnel.sh',
-                'Produktion: API + Portal auf VPS/Cloud hosten und WWC_PUBLIC_API_URL setzen',
-                'Lokales WordPress (LocalWP/VM): LAN-IP möglich, z. B. http://192.168.1.30:8081',
-                'localhost funktioniert nicht von einer Online-Website aus',
+                'Kundenseiten: immer die Portal-URL verwenden, Standard https://wwc.kiservicehub.de',
+                'localhost und LAN-IPs funktionieren nicht von einer öffentlichen WordPress-Seite aus',
             ],
         ]);
     }

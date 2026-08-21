@@ -30,7 +30,7 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
       .catch(() => undefined);
   }, []);
 
-  const recommended = connection?.recommended_api_url || install.api_url.replace("localhost", "192.168.1.30").replace("127.0.0.1", "192.168.1.30");
+  const recommended = connection?.recommended_api_url || install.api_url || "https://wwc.kiservicehub.de";
 
   async function handleDownload() {
     setBusy(true);
@@ -64,7 +64,7 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
       <div className="flash" style={{ marginBottom: 12 }}>
         <strong style={{ color: "var(--text)" }}>API-URL für WordPress</strong>
         <p className="muted" style={{ margin: "6px 0 0" }}>
-          Nicht <code>localhost</code> nutzen – LAN-IP oder Tunnel-URL:
+          Im WordPress-Agent vorausgefüllt – Portal-URL:
         </p>
         <div className="row" style={{ marginTop: 8 }}>
           <input readOnly value={recommended} style={{ flex: 1, color: "var(--accent-2)" }} />
@@ -78,7 +78,7 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
         {(install.steps || [
           "Plugin-ZIP herunterladen und in WordPress hochladen/aktivieren",
           "Einstellungen → WWC Agent öffnen",
-          "API-URL (LAN-IP oben) + Pairing-Code eintragen",
+          "API-URL (Portal, z. B. https://wwc.kiservicehub.de) + Pairing-Code eintragen",
           "Verbinden & synchronisieren",
         ]).map((step) => (
           <li key={step}>{step}</li>

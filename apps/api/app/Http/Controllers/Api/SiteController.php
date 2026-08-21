@@ -70,7 +70,7 @@ class SiteController extends Controller
                 'steps' => [
                     'Plugin-ZIP herunterladen',
                     'In WordPress unter Plugins → Installieren hochladen und aktivieren',
-                    'Einstellungen → WWC Agent: API-URL + Pairing-Code eintragen',
+                    'Einstellungen → WWC Agent: API-URL bleibt https://wwc.kiservicehub.de, Pairing-Code eintragen',
                 ],
             ],
         ], 201);

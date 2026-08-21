@@ -74,7 +74,12 @@ class PluginPackager
             }
             $absolute = $file->getRealPath();
             $relative = substr($absolute, strlen($source) + 1);
-            $zip->addFile($absolute, 'wwc-agent/'.str_replace('\\', '/', $relative));
+            $zipPath = 'wwc-agent/'.str_replace('\\', '/', $relative);
+            if (str_replace('\\', '/', $relative) === 'wwc-agent.php') {
+                $zip->addFromString($zipPath, $this->withBakedApiUrl((string) file_get_contents($absolute)));
+                continue;
+            }
+            $zip->addFile($absolute, $zipPath);
         }
 
         $zip->close();
@@ -83,6 +88,23 @@ class PluginPackager
         $this->writeLatestMeta($version, $latestLink);
 
         return $latestLink;
+    }
+
+    private function withBakedApiUrl(string $pluginBootstrap): string
+    {
+        $url = rtrim((string) config('wwc.public_api_url', config('app.url')), '/');
+        if ($url === '' || ! preg_match('#^https?://#i', $url)) {
+            $url = 'https://wwc.kiservicehub.de';
+        }
+        $url = str_replace(["\\", "'"], '', $url);
+        $updated = preg_replace(
+            "/define\(\s*'WWC_AGENT_DEFAULT_API_URL'\s*,\s*'[^']*'\s*\)/",
+            "define('WWC_AGENT_DEFAULT_API_URL', '{$url}')",
+            $pluginBootstrap,
+            1
+        );
+
+        return is_string($updated) ? $updated : $pluginBootstrap;
     }
 
     /**

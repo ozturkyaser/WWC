@@ -20,12 +20,13 @@ final class WWC_Agent_Admin
     private static function default_api_url(): string
     {
         if (defined('WWC_AGENT_API_URL') && is_string(WWC_AGENT_API_URL) && WWC_AGENT_API_URL !== '') {
-            return WWC_AGENT_API_URL;
+            return rtrim(WWC_AGENT_API_URL, '/');
+        }
+        if (defined('WWC_AGENT_DEFAULT_API_URL') && is_string(WWC_AGENT_DEFAULT_API_URL) && WWC_AGENT_DEFAULT_API_URL !== '') {
+            return rtrim(WWC_AGENT_DEFAULT_API_URL, '/');
         }
 
-        // Prefer LAN IP – works from LocalWP, VMs, and most Docker setups.
-        // Override in wp-config.php: define('WWC_AGENT_API_URL', 'http://...');
-        return 'http://192.168.1.30:8081';
+        return 'https://wwc.kiservicehub.de';
     }
 
     public static function render(): void
@@ -87,8 +88,7 @@ final class WWC_Agent_Admin
                 </form>
                 <p class="description" style="margin-top:12px;">Updates erscheinen auch unter <strong>Plugins → Installierte Plugins</strong>. Nach Portal-Release aktualisiert der Agent sich beim nächsten Heartbeat automatisch.</p>
             <?php else: ?>
-                <p><strong>Wichtig:</strong> Nicht <code>localhost</code> verwenden, wenn WordPress in LocalWP, Docker oder einer VM läuft.</p>
-                <p>Empfohlen: LAN-IP deines Macs, z. B. <code>http://192.168.1.30:8081</code></p>
+                <p>Standard-API-URL ist das WWC-Portal: <code><?php echo esc_html(self::default_api_url()); ?></code></p>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field('wwc_agent_pair'); ?>
                     <input type="hidden" name="action" value="wwc_agent_pair">
@@ -97,11 +97,7 @@ final class WWC_Agent_Admin
                             <th><label for="api_url">API URL</label></th>
                             <td>
                                 <input class="regular-text" type="url" name="api_url" id="api_url" value="<?php echo esc_attr(self::default_api_url()); ?>" required>
-                                <p class="description">
-                                    Alternativen:<br>
-                                    Docker Desktop: <code>http://172.17.0.1:8081</code> oder <code>http://host.docker.internal:8081</code><br>
-                                    WWC-Compose WordPress: <code>http://host.docker.internal:8081</code>
-                                </p>
+                                <p class="description">Für Kundenseiten immer die Portal-URL, nicht localhost oder eine LAN-IP.</p>
                             </td>
                         </tr>
                         <tr>

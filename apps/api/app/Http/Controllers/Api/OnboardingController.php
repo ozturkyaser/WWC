@@ -169,7 +169,7 @@ class OnboardingController extends Controller
                     'api_url' => rtrim((string) config('wwc.public_api_url', config('app.url')), '/'),
                     'steps' => [
                         'Plugin-ZIP herunterladen und in WordPress installieren/aktivieren',
-                        'Einstellungen → WWC Agent: API-URL + Pairing-Code → Verbinden',
+                        'Einstellungen → WWC Agent: API-URL bleibt https://wwc.kiservicehub.de, Pairing-Code → Verbinden',
                         'Danach startet automatisch: Full-Backup → Development-Umgebung',
                     ],
                 ],
