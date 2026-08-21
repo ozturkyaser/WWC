@@ -27,6 +27,7 @@ Route::prefix('auth')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::post('logout', [AuthController::class, 'logout']);
+        Route::post('password', [AuthController::class, 'changePassword']);
         Route::post('2fa/setup', [AuthController::class, 'twoFactorSetup']);
         Route::post('2fa/enable', [AuthController::class, 'twoFactorEnable']);
         Route::post('2fa/disable', [AuthController::class, 'twoFactorDisable']);

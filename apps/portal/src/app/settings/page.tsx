@@ -38,6 +38,97 @@ type Org = {
   alert_settings?: { roles?: string[]; quiet_hours?: { from?: string; to?: string; except_critical?: boolean } };
 };
 
+function PasswordSection() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [msg, setMsg] = useState("");
+  const [tone, setTone] = useState<"info" | "ok" | "error">("info");
+  const [saving, setSaving] = useState(false);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    if (password !== passwordConfirmation) {
+      setTone("error");
+      setMsg("Die neuen Passwörter stimmen nicht überein.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api("/auth/password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPassword,
+          password,
+          password_confirmation: passwordConfirmation,
+        }),
+      });
+      setCurrentPassword("");
+      setPassword("");
+      setPasswordConfirmation("");
+      setTone("ok");
+      setMsg("Passwort geändert. Andere Sitzungen wurden abgemeldet.");
+    } catch (err) {
+      setTone("error");
+      setMsg(err instanceof Error ? err.message : "Passwort ändern fehlgeschlagen");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Section
+      title="Passwort"
+      note="Aktuelles Passwort bestätigen, dann ein neues mit mindestens 8 Zeichen setzen."
+    >
+      <Flash tone={tone}>{msg}</Flash>
+      <form onSubmit={save}>
+        <div className="field">
+          <label htmlFor="current_password">Aktuelles Passwort</label>
+          <input
+            id="current_password"
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            required
+          />
+        </div>
+        <div className="grid form-2">
+          <div className="field">
+            <label htmlFor="new_password">Neues Passwort</label>
+            <input
+              id="new_password"
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="new_password_confirmation">Neues Passwort wiederholen</label>
+            <input
+              id="new_password_confirmation"
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              value={passwordConfirmation}
+              onChange={(e) => setPasswordConfirmation(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        <button className="btn" type="submit" disabled={saving}>
+          {saving ? "Speichere…" : "Passwort ändern"}
+        </button>
+      </form>
+    </Section>
+  );
+}
+
 function TwoFactorSection() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
@@ -562,6 +653,7 @@ export default function SettingsPage() {
         <button className="btn" type="submit">Alles speichern</button>
       </form>
 
+      <PasswordSection />
       <TwoFactorSection />
     </Shell>
   );

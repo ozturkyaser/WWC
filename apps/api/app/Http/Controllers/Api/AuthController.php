@@ -206,6 +206,31 @@ class AuthController extends Controller
         return false;
     }
 
+    public function changePassword(Request $request)
+    {
+        $data = $request->validate([
+            'current_password' => 'required|string',
+            'password' => 'required|string|min:8|confirmed|different:current_password',
+        ]);
+
+        $user = $request->user();
+        if (! Hash::check($data['current_password'], $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['Das aktuelle Passwort ist falsch.'],
+            ]);
+        }
+
+        $user->password = $data['password'];
+        $user->save();
+
+        $currentId = $user->currentAccessToken()?->id;
+        $user->tokens()->when($currentId, fn ($q) => $q->where('id', '!=', $currentId))->delete();
+
+        AuditLogger::log('auth.password_changed', $user->current_organization_id, $user, null, [], $request);
+
+        return response()->json(['ok' => true]);
+    }
+
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()->delete();
