@@ -14,6 +14,7 @@ use App\Services\PairingService;
 use App\Services\SiteOnboardingService;
 use App\Services\StagingPortalService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class OnboardingController extends Controller
 {
@@ -101,77 +102,80 @@ class OnboardingController extends Controller
             }
         }
 
-        if (! empty($data['client_id'])) {
-            $client = Client::where('organization_id', $orgId)->findOrFail($data['client_id']);
-            $client->fill(array_filter([
-                'name' => $data['client']['name'] ?? null,
-                'email' => $data['client']['email'] ?? null,
-                'company' => $data['client']['company'] ?? null,
-                'address' => $data['client']['address'] ?? null,
-                'vat_id' => $data['client']['vat_id'] ?? null,
-            ], fn ($v) => $v !== null && $v !== ''))->save();
-        } else {
-            $client = Client::create([
+        return DB::transaction(function () use ($request, $pairing, $onboarding, $orgId, $data, $scope, $budget) {
+            if (! empty($data['client_id'])) {
+                $client = Client::where('organization_id', $orgId)->findOrFail($data['client_id']);
+                $client->fill(array_filter([
+                    'name' => $data['client']['name'] ?? null,
+                    'email' => $data['client']['email'] ?? null,
+                    'company' => $data['client']['company'] ?? null,
+                    'address' => $data['client']['address'] ?? null,
+                    'vat_id' => $data['client']['vat_id'] ?? null,
+                ], fn ($v) => $v !== null && $v !== ''))->save();
+            } else {
+                $client = Client::create([
+                    'organization_id' => $orgId,
+                    'name' => $data['client']['name'],
+                    'email' => $data['client']['email'] ?? null,
+                    'company' => $data['client']['company'] ?? null,
+                    'address' => $data['client']['address'] ?? null,
+                    'vat_id' => $data['client']['vat_id'] ?? null,
+                ]);
+            }
+
+            $host = parse_url($data['site_url'], PHP_URL_HOST) ?: $data['site_url'];
+            $projectName = trim((string) ($data['project_name'] ?? '')) ?: ($client->name.' – '.$host);
+            $siteName = trim((string) ($data['site_name'] ?? '')) ?: $host;
+
+            $project = Project::create([
                 'organization_id' => $orgId,
-                'name' => $data['client']['name'],
-                'email' => $data['client']['email'] ?? null,
-                'company' => $data['client']['company'] ?? null,
-                'address' => $data['client']['address'] ?? null,
-                'vat_id' => $data['client']['vat_id'] ?? null,
+                'client_id' => $client->id,
+                'name' => $projectName,
+                'scope' => $scope,
+                'monthly_budget_cents' => $budget,
+                'maintenance_tier' => $data['maintenance_tier'],
+                'currency' => 'EUR',
+                'active' => true,
             ]);
-        }
 
-        $host = parse_url($data['site_url'], PHP_URL_HOST) ?: $data['site_url'];
-        $projectName = $data['project_name'] ?: $client->name.' – '.$host;
+            $site = Site::create([
+                'organization_id' => $orgId,
+                'client_id' => $client->id,
+                'project_id' => $project->id,
+                'name' => $siteName,
+                'url' => rtrim($data['site_url'], '/'),
+                'status' => 'pending',
+            ]);
 
-        $project = Project::create([
-            'organization_id' => $orgId,
-            'client_id' => $client->id,
-            'name' => $projectName,
-            'scope' => $scope,
-            'monthly_budget_cents' => $budget,
-            'maintenance_tier' => $data['maintenance_tier'],
-            'currency' => 'EUR',
-            'active' => true,
-        ]);
+            $onboarding->markAwaitingPair($site);
+            $code = $pairing->createCode($site);
 
-        $site = Site::create([
-            'organization_id' => $orgId,
-            'client_id' => $client->id,
-            'project_id' => $project->id,
-            'name' => $data['site_name'] ?: $host,
-            'url' => rtrim($data['site_url'], '/'),
-            'status' => 'pending',
-        ]);
+            AuditLogger::log('project.onboarded', $orgId, $request->user(), $site->id, [
+                'project_id' => $project->id,
+                'tier' => $data['maintenance_tier'],
+                'budget_cents' => $budget,
+            ], $request);
 
-        $onboarding->markAwaitingPair($site);
-        $code = $pairing->createCode($site);
-
-        AuditLogger::log('project.onboarded', $orgId, $request->user(), $site->id, [
-            'project_id' => $project->id,
-            'tier' => $data['maintenance_tier'],
-            'budget_cents' => $budget,
-        ], $request);
-
-        return response()->json([
-            'data' => $project->load(['client', 'sites']),
-            'client' => $client,
-            'install' => [
-                'site_id' => $site->id,
-                'site_name' => $site->name,
-                'site_url' => $site->url,
-                'pairing_code' => $code->code,
-                'expires_at' => $code->expires_at,
-                'plugin_download_url' => url('/api/plugin/download'),
-                'api_url' => rtrim((string) config('wwc.public_api_url', config('app.url')), '/'),
-                'steps' => [
-                    'Plugin-ZIP herunterladen und in WordPress installieren/aktivieren',
-                    'Einstellungen → WWC Agent: API-URL + Pairing-Code → Verbinden',
-                    'Danach startet automatisch: Full-Backup → Development-Umgebung',
+            return response()->json([
+                'data' => $project->load(['client', 'sites']),
+                'client' => $client,
+                'install' => [
+                    'site_id' => $site->id,
+                    'site_name' => $site->name,
+                    'site_url' => $site->url,
+                    'pairing_code' => $code->code,
+                    'expires_at' => $code->expires_at,
+                    'plugin_download_url' => url('/api/plugin/download'),
+                    'api_url' => rtrim((string) config('wwc.public_api_url', config('app.url')), '/'),
+                    'steps' => [
+                        'Plugin-ZIP herunterladen und in WordPress installieren/aktivieren',
+                        'Einstellungen → WWC Agent: API-URL + Pairing-Code → Verbinden',
+                        'Danach startet automatisch: Full-Backup → Development-Umgebung',
+                    ],
                 ],
-            ],
-            'onboarding' => $onboarding->statusPayload($site->fresh()),
-        ], 201);
+                'onboarding' => $onboarding->statusPayload($site->fresh()),
+            ], 201);
+        });
     }
 
     public function siteStatus(Request $request, string $siteId, SiteOnboardingService $onboarding, StagingPortalService $staging)
