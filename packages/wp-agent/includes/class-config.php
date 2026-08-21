@@ -32,7 +32,7 @@ final class WWC_Agent_Config
     public static function update(array $values): void
     {
         $current = self::all();
-        update_option(self::OPTION, array_merge($current, $values), true);
+        update_option(self::OPTION, array_merge($current, $values), false);
     }
 
     public static function clear(): void

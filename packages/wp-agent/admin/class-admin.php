@@ -115,16 +115,20 @@ final class WWC_Agent_Admin
     public static function handle_pair(): void
     {
         self::silence_debug_output();
+        @ini_set('memory_limit', '512M');
         if (! current_user_can('manage_options')) {
             wp_die('Forbidden');
         }
         check_admin_referer('wwc_agent_pair');
 
-        // Don't use esc_url_raw here – it can mangle non-public hosts like host.docker.internal in some WP versions.
         $api = trim((string) wp_unslash($_POST['api_url'] ?? ''));
         $code = sanitize_text_field((string) wp_unslash($_POST['code'] ?? ''));
 
-        $result = WWC_Agent_Api_Client::pair($api, $code);
+        try {
+            $result = WWC_Agent_Api_Client::pair($api, $code);
+        } catch (\Throwable $e) {
+            self::redirect(['error' => 'Pairing abgebrochen: '.$e->getMessage()]);
+        }
         if (is_wp_error($result)) {
             self::redirect(['error' => $result->get_error_message()]);
         }
@@ -132,18 +136,7 @@ final class WWC_Agent_Admin
             self::redirect(['error' => 'Pairing am Portal ok, Schlüssel konnte lokal nicht gespeichert werden. Bitte erneut verbinden.']);
         }
 
-        // Do not inventory/backup-scan in this request: cuno-sized sites OOM and
-        // WordPress shows a critical error on admin-post.php while the portal already
-        // thinks the site is paired.
-        if (! wp_next_scheduled('wwc_agent_heartbeat')) {
-            wp_schedule_single_event(time() + 10, 'wwc_agent_heartbeat');
-        }
-        if (function_exists('wwc_agent_spawn_cron_hint')) {
-            wwc_agent_spawn_cron_hint();
-        }
-
-        WWC_Agent_Config::update(['last_error' => '']);
-        self::redirect(['paired' => '1', 'notice' => 'Verbunden. Synchronisierung läuft im Hintergrund.']);
+        self::redirect(['paired' => '1', 'notice' => 'Verbunden. Updates und Backups erscheinen nach dem nächsten Sync im Portal.']);
     }
 
     public static function handle_sync(): void
