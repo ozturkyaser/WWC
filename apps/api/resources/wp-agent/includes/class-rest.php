@@ -6,6 +6,7 @@ final class WWC_Agent_Rest
 {
     public static function register(): void
     {
+        add_filter('rest_pre_serve_request', [self::class, 'discard_stray_output'], 0, 4);
         add_action('rest_api_init', static function (): void {
             register_rest_route('wwc/v1', '/ping', [
                 'methods' => 'GET',
@@ -33,6 +34,19 @@ final class WWC_Agent_Rest
                 'permission_callback' => [self::class, 'authorize'],
             ]);
         });
+    }
+
+    public static function discard_stray_output($served, $result, $request, $server)
+    {
+        $route = is_object($request) && method_exists($request, 'get_route') ? (string) $request->get_route() : '';
+        if (str_starts_with($route, '/wwc/')) {
+            @ini_set('display_errors', '0');
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+        }
+
+        return $served;
     }
 
     public static function download_backup(WP_REST_Request $request)

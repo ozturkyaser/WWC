@@ -18,6 +18,6 @@ class PluginPackagerTest extends TestCase
         $packager = app(PluginPackager::class);
         $source = $packager->sourcePath();
         $this->assertStringContainsString('packages/wp-agent', $source);
-        $this->assertSame('0.6.2', $packager->version());
+        $this->assertSame('0.6.3', $packager->version());
     }
 }

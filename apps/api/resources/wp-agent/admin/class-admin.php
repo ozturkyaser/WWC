@@ -118,6 +118,7 @@ final class WWC_Agent_Admin
 
     public static function handle_pair(): void
     {
+        self::silence_debug_output();
         if (! current_user_can('manage_options')) {
             wp_die('Forbidden');
         }
@@ -147,6 +148,7 @@ final class WWC_Agent_Admin
 
     public static function handle_sync(): void
     {
+        self::silence_debug_output();
         if (! current_user_can('manage_options')) {
             wp_die('Forbidden');
         }
@@ -164,6 +166,7 @@ final class WWC_Agent_Admin
 
     public static function handle_disconnect(): void
     {
+        self::silence_debug_output();
         if (! current_user_can('manage_options')) {
             wp_die('Forbidden');
         }
@@ -172,9 +175,22 @@ final class WWC_Agent_Admin
         self::redirect(['notice' => 'Verbindung getrennt. Du kannst erneut pairen.']);
     }
 
+    private static function silence_debug_output(): void
+    {
+        @ini_set('display_errors', '0');
+        @ini_set('html_errors', '0');
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        ob_start();
+    }
+
     private static function redirect(array $args): void
     {
         $args['page'] = 'wwc-agent';
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
         wp_safe_redirect(add_query_arg($args, admin_url('options-general.php')));
         exit;
     }
