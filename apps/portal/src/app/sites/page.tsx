@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { Drawer, Empty, Flash, PageHeader } from "@/components/ui";
-import { api, downloadPlugin } from "@/lib/api";
+import { api } from "@/lib/api";
 
 type Site = {
   id: string;
@@ -51,11 +51,6 @@ export default function SitesPage() {
       setUrl("https://");
       setOpen(false);
       await load();
-      try {
-        await downloadPlugin();
-      } catch {
-        /* retry via wizard */
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Fehler");
     }
@@ -158,7 +153,6 @@ export default function SitesPage() {
                         onClick={async () => {
                           const res = await api<{ install: InstallInfo }>(`/sites/${s.id}/reconnect`, { method: "POST" });
                           setInstall(res.install);
-                          try { await downloadPlugin(); } catch { /* ignore */ }
                           await load();
                         }}
                       >

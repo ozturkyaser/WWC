@@ -7,7 +7,7 @@ import { Shell } from "@/components/Shell";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProcessBar, ProcessList } from "@/components/ProcessBar";
 import { Flash, PageHeader, Tabs } from "@/components/ui";
-import { api, downloadPlugin, downloadSiteBackup } from "@/lib/api";
+import { api, downloadSiteBackup } from "@/lib/api";
 
 type Backup = {
   id: string;
@@ -522,11 +522,6 @@ export default function SiteDetailPage() {
   async function newPairing() {
     const res = await api<{ install: InstallInfo }>(`/sites/${params.id}/reconnect`, { method: "POST" });
     setInstall(res.install);
-    try {
-      await downloadPlugin();
-    } catch {
-      /* retry */
-    }
     await load();
   }
 
@@ -720,8 +715,8 @@ export default function SiteDetailPage() {
       {!detail.agent_synced && !install && (
         <Flash tone="error">
           Portal zeigt „verbunden“, aber der Agent auf der Website hat keine Plugin-Liste geliefert.
-          Oben „Neu verbinden“ klicken, in WordPress unter Einstellungen → WWC Agent den neuen Code eintragen
-          (API-URL ist standardmäßig https://wwc.kiservicehub.de). Danach erscheinen Updates und Backups.
+          Oben „Neu verbinden“ klicken, in WordPress unter Einstellungen → WWC Agent nur den neuen Code eintragen
+          (kein neues ZIP). API-URL: https://wwc.kiservicehub.de. Danach erscheinen Updates und Backups.
         </Flash>
       )}
       {install && <div style={{ marginBottom: 16 }}><InstallWizard install={install} /></div>}

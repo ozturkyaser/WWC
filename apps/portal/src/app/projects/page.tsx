@@ -6,7 +6,7 @@ import { Shell } from "@/components/Shell";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProjectOnboardingWizard } from "@/components/ProjectOnboardingWizard";
 import { Drawer, Empty, Flash, PageHeader } from "@/components/ui";
-import { api, API_URL, downloadPlugin, downloadSiteBackup } from "@/lib/api";
+import { api, API_URL, downloadSiteBackup } from "@/lib/api";
 
 type Client = { id: string; name: string; email?: string };
 type Project = {
@@ -90,12 +90,7 @@ export default function ProjectsPage() {
     });
     setInstall(res.install);
     setMsgTone("info");
-    setMsg("Neue Verbindung bereit – Pairing-Code verwenden.");
-    try {
-      await downloadPlugin();
-    } catch {
-      /* optional */
-    }
+    setMsg("Neue Verbindung bereit – Pairing-Code in WordPress eintragen, kein neues ZIP.");
     await load();
   }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { api, downloadPlugin } from "@/lib/api";
+import { api } from "@/lib/api";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProcessBar } from "@/components/ProcessBar";
 
@@ -164,11 +164,6 @@ export function ProjectOnboardingWizard({
       setOnboarding(res.onboarding);
       setStep(5);
       setMsg("Projekt angelegt – Plugin verbinden. Danach starten Backup & Dev-Umgebung automatisch.");
-      try {
-        await downloadPlugin();
-      } catch {
-        /* optional */
-      }
       onDone?.();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Anlegen fehlgeschlagen");

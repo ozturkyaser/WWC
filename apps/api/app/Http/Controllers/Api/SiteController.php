@@ -67,9 +67,9 @@ class SiteController extends Controller
                 'expires_at' => $code->expires_at,
                 'plugin_download_url' => url('/api/plugin/download'),
                 'api_url' => rtrim((string) config('wwc.public_api_url', config('app.url')), '/'),
+                'mode' => 'install',
                 'steps' => [
-                    'Plugin-ZIP herunterladen',
-                    'In WordPress unter Plugins → Installieren hochladen und aktivieren',
+                    'Nur beim ersten Mal: Plugin-ZIP herunterladen und in WordPress aktivieren',
                     'Einstellungen → WWC Agent: API-URL bleibt https://wwc.kiservicehub.de, Pairing-Code eintragen',
                 ],
             ],
@@ -208,10 +208,11 @@ class SiteController extends Controller
                 'expires_at' => $result['expires_at'],
                 'plugin_download_url' => $result['plugin_download_url'],
                 'api_url' => $result['api_url'],
+                'mode' => 'reconnect',
                 'steps' => [
-                    'Optional: neues Plugin-ZIP herunterladen',
-                    'In WP unter WWC Agent Verbindung trennen (falls verbunden)',
-                    'API-URL + neuen Pairing-Code eintragen und verbinden',
+                    'In WordPress: Einstellungen → WWC Agent (Plugin bleibt installiert)',
+                    'Falls verbunden: Verbindung trennen',
+                    'API-URL prüfen, neuen Pairing-Code eintragen → Verbinden',
                 ],
             ],
         ]);

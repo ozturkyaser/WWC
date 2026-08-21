@@ -11,6 +11,7 @@ export type InstallInfo = {
   site_url?: string;
   site_name?: string;
   steps?: string[];
+  mode?: "install" | "reconnect";
 };
 
 type ConnectionInfo = {
@@ -31,6 +32,21 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
   }, []);
 
   const recommended = connection?.recommended_api_url || install.api_url || "https://wwc.kiservicehub.de";
+  const reconnect = install.mode === "reconnect";
+  const steps = install.steps?.length
+    ? install.steps
+    : reconnect
+      ? [
+          "In WordPress: Einstellungen → WWC Agent (Plugin bleibt installiert)",
+          "API-URL prüfen, neuen Pairing-Code eintragen",
+          "Verbinden – kein neues ZIP nötig",
+        ]
+      : [
+          "Einmal: Plugin-ZIP herunterladen und in WordPress hochladen/aktivieren",
+          "Einstellungen → WWC Agent öffnen",
+          "API-URL (Portal) + Pairing-Code eintragen",
+          "Verbinden",
+        ];
 
   async function handleDownload() {
     setBusy(true);
@@ -53,11 +69,16 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
   return (
     <div className="surface surface-pad" style={{ borderColor: "rgba(196,163,90,0.35)" }}>
       <h2 style={{ marginTop: 0, fontSize: "1.15rem" }}>
-        Plugin verbinden
+        {reconnect ? "Erneut verbinden" : "Plugin verbinden"}
       </h2>
       {install.site_name && (
         <p className="muted" style={{ marginTop: 0 }}>
           {install.site_name}{install.site_url ? ` · ${install.site_url}` : ""}
+        </p>
+      )}
+      {reconnect && (
+        <p className="muted" style={{ marginTop: 0 }}>
+          Das Plugin bleibt. Nur den neuen Code in WordPress eintragen.
         </p>
       )}
 
@@ -75,12 +96,7 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
       </div>
 
       <ol style={{ paddingLeft: 18, color: "var(--muted)", lineHeight: 1.6 }}>
-        {(install.steps || [
-          "Plugin-ZIP herunterladen und in WordPress hochladen/aktivieren",
-          "Einstellungen → WWC Agent öffnen",
-          "API-URL (Portal, z. B. https://wwc.kiservicehub.de) + Pairing-Code eintragen",
-          "Verbinden & synchronisieren",
-        ]).map((step) => (
+        {steps.map((step) => (
           <li key={step}>{step}</li>
         ))}
       </ol>
@@ -122,11 +138,23 @@ export function InstallWizard({ install }: { install: InstallInfo }) {
         </details>
       )}
 
-      <div className="row">
-        <button className="btn" type="button" disabled={busy} onClick={handleDownload}>
-          {busy ? "…" : "WWC-Agent Plugin (ZIP) herunterladen"}
-        </button>
-      </div>
+      {reconnect ? (
+        <details style={{ marginTop: 8 }}>
+          <summary className="muted">Plugin fehlt oder Version zu alt?</summary>
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            Nur dann ZIP einmal ersetzen. Danach reicht wieder der Pairing-Code.
+          </p>
+          <button className="btn secondary" type="button" disabled={busy} onClick={handleDownload}>
+            {busy ? "…" : "Plugin-ZIP herunterladen"}
+          </button>
+        </details>
+      ) : (
+        <div className="row">
+          <button className="btn" type="button" disabled={busy} onClick={handleDownload}>
+            {busy ? "…" : "WWC-Agent Plugin (ZIP) herunterladen"}
+          </button>
+        </div>
+      )}
       {msg && <p className="muted" style={{ marginBottom: 0 }}>{msg}</p>}
     </div>
   );
