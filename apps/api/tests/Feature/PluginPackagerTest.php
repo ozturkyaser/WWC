@@ -18,7 +18,7 @@ class PluginPackagerTest extends TestCase
         $packager = app(PluginPackager::class);
         $source = $packager->sourcePath();
         $this->assertStringContainsString('packages/wp-agent', $source);
-        $this->assertSame('0.6.7', $packager->version());
+        $this->assertSame('0.6.8', $packager->version());
         $bootstrap = (string) file_get_contents($source.'/wwc-agent.php');
         $this->assertStringContainsString("define('WWC_AGENT_DEFAULT_API_URL', 'https://wwc.kiservicehub.de')", $bootstrap);
     }

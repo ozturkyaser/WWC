@@ -191,6 +191,9 @@ final class WWC_Agent_Background
         if (is_array($payload['excludes'] ?? null)) {
             $options['excludes'] = array_values(array_filter(array_map('strval', $payload['excludes'])));
         }
+        if (! empty($payload['fresh'])) {
+            $options['fresh'] = true;
+        }
 
         // Persist as site default so automatic backups (pre-staging etc.) use it too
         if (! empty($payload['save_settings']) && $options !== []) {

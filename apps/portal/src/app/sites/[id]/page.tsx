@@ -905,7 +905,13 @@ export default function SiteDetailPage() {
               <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>Schnellaktionen</h3>
               <p className="muted" style={{ marginTop: 0 }}>Nur die häufigsten Schritte – Details in den Tabs.</p>
               <div className="row">
-                <button className="btn" disabled={busy} type="button" onClick={() => run("backup_full", { label: "manual-full" })}>
+                <button
+                  className="btn"
+                  disabled={busy}
+                  type="button"
+                  title="Setzt ein unvollständiges Backup fort, falls vorhanden"
+                  onClick={() => run("backup_full", { label: "manual-full" })}
+                >
                   Full Backup
                 </button>
                 <button className="btn secondary" disabled={busy} type="button" onClick={() => setTab("staging")}>
@@ -1425,6 +1431,23 @@ export default function SiteDetailPage() {
             >
               Full Backup
             </button>
+            <button
+              className="btn secondary"
+              disabled={busy}
+              type="button"
+              title="Unvollständiges Backup verwerfen und komplett neu starten"
+              onClick={() =>
+                run("backup_full", {
+                  label: "manual-full",
+                  fresh: true,
+                  ...(scanReport
+                    ? { excludes: [...scanExcludes], save_settings: saveScanSettings }
+                    : {}),
+                })
+              }
+            >
+              Neu von vorn
+            </button>
             <button className="btn secondary" disabled={busy} type="button" onClick={() => run("backup_incremental", { label: "manual-incr" })}>
               Inkrementell
             </button>
@@ -1449,6 +1472,9 @@ export default function SiteDetailPage() {
               Letzten Stand herunterladen
             </button>
           </div>
+          <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: "0.85rem" }}>
+            Full Backup setzt ein abgebrochenes Backup automatisch fort. „Neu von vorn“ verwirft den Zwischenstand.
+          </p>
 
           {scanReport && (
             <div className="surface surface-pad" style={{ marginBottom: 16, background: "rgba(0,0,0,0.18)" }}>

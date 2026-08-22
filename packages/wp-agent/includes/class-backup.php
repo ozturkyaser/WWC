@@ -205,11 +205,35 @@ final class WWC_Agent_Backup
     public static function create_full(string $label = 'manual', array $options = []): array
     {
         self::prepare_runtime();
+        $forceFresh = ! empty($options['fresh']);
+        unset($options['fresh']);
+        if ($forceFresh) {
+            self::discard_unfinished_work();
+        }
         $jobId = WWC_Agent_Job_Progress::currentJobId() ?: ('local-'.wp_generate_password(8, false, false));
-        $work = self::load_work($jobId);
+        $work = $forceFresh ? null : self::load_work($jobId);
+        $adopted = false;
+        if ($work === null && ! $forceFresh) {
+            $leftover = self::find_unfinished_work();
+            if ($leftover !== null) {
+                $work = $leftover['work'];
+                $work['job_id'] = $jobId;
+                $oldJobId = (string) ($leftover['old_job_id'] ?? '');
+                if ($oldJobId !== '' && $oldJobId !== $jobId) {
+                    self::clear_work($oldJobId);
+                }
+                self::save_work($jobId, $work);
+                $adopted = true;
+                WWC_Agent_Job_Progress::report(
+                    (int) ($work['percent'] ?? 8),
+                    'Unvollständiges Backup fortsetzen ('.$work['phase'].')…',
+                    true
+                );
+            }
+        }
         if ($work === null) {
             $work = self::start_full_work($jobId, $label, $options);
-        } else {
+        } elseif (! $adopted) {
             WWC_Agent_Job_Progress::report(
                 (int) ($work['percent'] ?? 8),
                 'Backup fortsetzen ('.$work['phase'].')…',
@@ -268,6 +292,89 @@ final class WWC_Agent_Backup
     public static function has_work(string $jobId): bool
     {
         return self::load_work($jobId) !== null;
+    }
+
+    /**
+     * @return array{work: array<string, mixed>, old_job_id: string}|null
+     */
+    public static function find_unfinished_work(): ?array
+    {
+        $candidates = [];
+        $map = get_option('wwc_agent_backup_jobs', []);
+        if (is_array($map)) {
+            foreach ($map as $oldJobId => $meta) {
+                $dir = is_array($meta) ? rtrim((string) ($meta['dir'] ?? ''), '/') : '';
+                $work = $dir !== '' ? self::read_json_file($dir.'/work.json') : null;
+                if (! self::is_resumable_work($work)) {
+                    continue;
+                }
+                $candidates[] = [
+                    'work' => $work,
+                    'old_job_id' => (string) $oldJobId,
+                    'updated' => (int) ($meta['updated_at'] ?? 0),
+                ];
+            }
+        }
+        foreach (glob(self::root().'/full-*/work.json') ?: [] as $file) {
+            $work = self::read_json_file($file);
+            if (! self::is_resumable_work($work)) {
+                continue;
+            }
+            $dir = dirname($file);
+            foreach ($candidates as $candidate) {
+                if (rtrim((string) ($candidate['work']['dir'] ?? ''), '/') === $dir) {
+                    continue 2;
+                }
+            }
+            $candidates[] = [
+                'work' => $work,
+                'old_job_id' => (string) ($work['job_id'] ?? ''),
+                'updated' => (int) (@filemtime($file) ?: 0),
+            ];
+        }
+        if ($candidates === []) {
+            return null;
+        }
+        usort($candidates, static fn ($a, $b) => ($b['updated'] <=> $a['updated']));
+
+        return ['work' => $candidates[0]['work'], 'old_job_id' => (string) $candidates[0]['old_job_id']];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $work
+     */
+    private static function is_resumable_work(?array $work): bool
+    {
+        if ($work === null) {
+            return false;
+        }
+        $dir = rtrim((string) ($work['dir'] ?? ''), '/');
+        $id = (string) ($work['id'] ?? '');
+        $phase = (string) ($work['phase'] ?? '');
+
+        return $dir !== ''
+            && is_dir($dir)
+            && str_starts_with($id, 'full-')
+            && in_array($phase, ['db', 'scan', 'zip', 'finish'], true)
+            && ! is_file($dir.'/manifest.json');
+    }
+
+    private static function discard_unfinished_work(): void
+    {
+        for ($i = 0; $i < 8; $i++) {
+            $leftover = self::find_unfinished_work();
+            if ($leftover === null) {
+                return;
+            }
+            $oldJobId = (string) ($leftover['old_job_id'] ?? '');
+            if ($oldJobId !== '') {
+                self::clear_work($oldJobId);
+            }
+            $dir = rtrim((string) ($leftover['work']['dir'] ?? ''), '/');
+            if ($dir !== '' && is_dir($dir) && ! is_file($dir.'/manifest.json')) {
+                self::rrmdir($dir);
+            }
+        }
     }
 
     public static function create_incremental(string $label = 'auto', array $options = []): array
