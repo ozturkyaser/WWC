@@ -46,6 +46,7 @@ class JobProgress
             'run_scan' => 'Security-Scan',
             'inventory' => 'Inventory',
             'purge_wwc' => 'Aufräumen',
+            'delete_backup' => 'Backup löschen',
             'security_harden' => 'Sicherheits-Härtung',
             'security_status' => 'Härtungs-Status',
         ];

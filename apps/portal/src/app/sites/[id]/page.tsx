@@ -17,6 +17,7 @@ type Backup = {
   size_bytes?: number;
   offsite?: boolean;
   verified?: boolean;
+  incomplete?: boolean;
 };
 
 type ServerBackup = {
@@ -572,6 +573,7 @@ export default function SiteDetailPage() {
         ...b,
         offsite: b.offsite || Boolean(existing?.offsite),
         verified: Boolean(existing?.verified),
+        incomplete: Boolean(b.incomplete || existing?.incomplete),
       });
     }
     return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
@@ -1591,13 +1593,16 @@ export default function SiteDetailPage() {
                     {b.verified && (
                       <span className="badge completed" title="Wiederherstellung wurde im Dev-Clone erfolgreich getestet">geprüft</span>
                     )}
+                    {b.incomplete && (
+                      <span className="badge warn" title="Abgebrochenes Backup, nur Zwischenstand">unvollständig</span>
+                    )}
                   </td>
                   <td className="muted">{formatBytes(b.size_bytes)}</td>
                   <td>
                     <div className="action-menu">
                       <button
                         className="btn secondary sm"
-                        disabled={busy}
+                        disabled={busy || Boolean(b.incomplete)}
                         type="button"
                         onClick={async () => {
                           setBusy(true);
@@ -1615,7 +1620,7 @@ export default function SiteDetailPage() {
                       </button>
                       <button
                         className="btn danger sm"
-                        disabled={busy}
+                        disabled={busy || Boolean(b.incomplete)}
                         type="button"
                         onClick={() => {
                           if (confirm(`Site auf Backup ${b.id} zurücksetzen?`)) {
@@ -1624,6 +1629,30 @@ export default function SiteDetailPage() {
                         }}
                       >
                         Restore
+                      </button>
+                      <button
+                        className="btn danger sm"
+                        disabled={busy}
+                        type="button"
+                        onClick={async () => {
+                          if (!confirm(`Backup ${b.id} löschen? Dateien auf dem WWC-Server und auf der Website werden entfernt.`)) {
+                            return;
+                          }
+                          setBusy(true);
+                          try {
+                            await api(`/sites/${params.id}/backups/${encodeURIComponent(b.id)}`, { method: "DELETE" });
+                            setMsgTone("ok");
+                            setMsg("Backup gelöscht");
+                            await load();
+                          } catch (e) {
+                            setMsgTone("error");
+                            setMsg(e instanceof Error ? e.message : "Löschen fehlgeschlagen");
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        Löschen
                       </button>
                     </div>
                   </td>

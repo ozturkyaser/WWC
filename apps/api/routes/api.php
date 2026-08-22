@@ -105,6 +105,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
     Route::get('/sites/{siteId}/backups/latest/download', [BackupController::class, 'downloadLatest']);
     Route::get('/sites/{siteId}/backups/{backupId}/download', [BackupController::class, 'download']);
+    Route::delete('/sites/{siteId}/backups/{backupId}', [BackupController::class, 'destroy']);
     Route::get('/staging/{slug}', [StagingController::class, 'showBySlug']);
 
     Route::get('/clients', [ClientController::class, 'index']);

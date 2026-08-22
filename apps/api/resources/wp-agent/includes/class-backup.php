@@ -36,6 +36,36 @@ final class WWC_Agent_Backup
             unset($json['files']);
             $items[] = $json;
         }
+        $seen = [];
+        foreach ($items as $item) {
+            $seen[(string) ($item['id'] ?? '')] = true;
+        }
+        foreach (glob(self::root().'/*', GLOB_ONLYDIR) ?: [] as $dir) {
+            $id = basename($dir);
+            if ($id === '' || isset($seen[$id]) || is_file($dir.'/manifest.json')) {
+                continue;
+            }
+            if (! is_file($dir.'/work.json') && ! is_file($dir.'/files.zip') && ! is_file($dir.'/database.sql')) {
+                continue;
+            }
+            $work = self::read_json_file($dir.'/work.json');
+            $size = 0;
+            foreach (['files.zip', 'database.sql'] as $name) {
+                if (is_file($dir.'/'.$name)) {
+                    $size += (int) filesize($dir.'/'.$name);
+                }
+            }
+            $items[] = [
+                'id' => $id,
+                'type' => str_starts_with($id, 'incr-') ? 'incremental' : 'full',
+                'label' => 'unvollständig',
+                'created_at' => gmdate('c', (int) (@filemtime($dir) ?: time())),
+                'size_bytes' => $size,
+                'offsite' => false,
+                'incomplete' => true,
+                'phase' => is_array($work) ? ($work['phase'] ?? null) : null,
+            ];
+        }
         usort($items, static fn ($a, $b) => strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? '')));
 
         return ['ok' => true, 'backups' => $items];
@@ -522,15 +552,19 @@ final class WWC_Agent_Backup
     public static function delete(string $backupId): array
     {
         $backupId = self::sanitize_id($backupId);
-        $dir = self::root().'/'.$backupId;
-        if (! is_dir($dir)) {
-            return ['ok' => false, 'error' => 'Backup not found'];
+        if ($backupId === '') {
+            return ['ok' => false, 'error' => 'Ungültige Backup-ID'];
         }
-        self::rrmdir($dir);
+        $dir = self::root().'/'.$backupId;
+        $hadLocal = is_dir($dir);
+        if ($hadLocal) {
+            self::rrmdir($dir);
+        }
+        self::forget_work_for_backup($backupId);
         WWC_Agent_Backup_Uploader::delete_remote($backupId);
         WWC_Agent_Event_Queue::push('backup_deleted', 'Backup '.$backupId.' deleted', 'info', ['id' => $backupId]);
 
-        return ['ok' => true, 'deleted' => $backupId];
+        return ['ok' => true, 'deleted' => $backupId, 'local' => $hadLocal];
     }
 
     public static function delete_all(): array
@@ -573,6 +607,26 @@ final class WWC_Agent_Backup
     private static function sanitize_id(string $backupId): string
     {
         return preg_replace('/[^a-zA-Z0-9\-_]/', '', $backupId) ?: '';
+    }
+
+    private static function forget_work_for_backup(string $backupId): void
+    {
+        $map = get_option('wwc_agent_backup_jobs', []);
+        if (! is_array($map)) {
+            return;
+        }
+        $changed = false;
+        foreach ($map as $jobId => $meta) {
+            $id = is_array($meta) ? (string) ($meta['id'] ?? '') : '';
+            $dir = is_array($meta) ? basename((string) ($meta['dir'] ?? '')) : '';
+            if ($id === $backupId || $dir === $backupId) {
+                unset($map[$jobId]);
+                $changed = true;
+            }
+        }
+        if ($changed) {
+            update_option('wwc_agent_backup_jobs', $map, false);
+        }
     }
 
     public static function restore(string $backupId): array
