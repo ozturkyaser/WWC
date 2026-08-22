@@ -1484,6 +1484,15 @@ final class WWC_Agent_Backup
 
         $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
         if (! ($append['ok'] ?? false)) {
+            if (! empty($append['rebuild']) && $from > 0) {
+                @unlink($zipFile);
+                $work['zip_index'] = 0;
+                $work['percent'] = 48;
+                WWC_Agent_Job_Progress::report(48, 'ZIP war beschädigt – Aufbau neu…', true);
+
+                return ['ok' => true];
+            }
+
             return $append;
         }
 
@@ -1511,11 +1520,21 @@ final class WWC_Agent_Backup
     private static function zip_append(string $zipFile, array $batch, string $base, bool $create): array
     {
         $cli = self::zip_append_cli($zipFile, $batch, $base, $create);
-        if ($cli !== null) {
+        if (is_array($cli) && ($cli['ok'] ?? false)) {
             return $cli;
         }
 
-        return self::zip_append_php($zipFile, $batch, $base, $create);
+        $php = self::zip_append_php($zipFile, $batch, $base, $create);
+        if ($php['ok'] ?? false) {
+            return $php;
+        }
+        if (! $create && is_file($zipFile)) {
+            $cliError = is_array($cli) ? ($cli['error'] ?? null) : null;
+
+            return ['ok' => false, 'rebuild' => true, 'error' => (string) ($php['error'] ?? $cliError ?? 'ZIP beschädigt')];
+        }
+
+        return $php;
     }
 
     /**
@@ -1545,11 +1564,14 @@ final class WWC_Agent_Backup
         $code = 0;
         @exec($cmd, $out, $code);
         @unlink($listFile);
-        if ($code !== 0 && $code !== 12) {
-            return $create ? null : ['ok' => false, 'error' => 'zip CLI failed (code '.$code.')'];
+        if ($code === 0) {
+            return ['ok' => true];
         }
 
-        return ['ok' => true];
+        return [
+            'ok' => false,
+            'error' => 'zip CLI failed (code '.$code.')'.($out !== [] ? ': '.mb_substr(implode(' ', $out), 0, 180) : ''),
+        ];
     }
 
     /**
