@@ -272,9 +272,9 @@ final class WWC_Agent_Backup
         }
 
         $started = microtime(true);
-        $budget = self::slice_budget();
 
-        while (! self::slice_exhausted($started, $budget)) {
+        while (! self::slice_exhausted($started, self::slice_budget((string) ($work['phase'] ?? '')))) {
+            $budget = self::slice_budget((string) ($work['phase'] ?? ''));
             if (($work['phase'] ?? '') === 'db') {
                 $step = self::export_database_slice($work, $started, $budget);
                 self::save_work($jobId, $work);
@@ -780,6 +780,11 @@ final class WWC_Agent_Backup
             'wp-content/backupbuddy_backups/',
             'wp-content/uploads/backwpup-',
             'wp-content/uploads/wp-staging/',
+            'wp-content/backups/',
+            'wp-content/akeeba_backup/',
+            'wp-content/plugins/akeebabackupwp/backups/',
+            'wp-content/plugins/akeebabackupwp/app/backups/',
+            'wp-content/wflogs/',
             // Entwicklung
             '.git/',
             'node_modules/',
@@ -1450,62 +1455,70 @@ final class WWC_Agent_Backup
      */
     private static function zip_files_slice(array &$work, float $started, int $budget): array
     {
-        $map = self::read_json_file($work['dir'].'/filemap.json') ?? [];
-        $paths = array_keys($map);
+        [$map, $paths] = self::cached_filemap($work['dir']);
         $zipFile = $work['dir'].'/files.zip';
         $from = (int) ($work['zip_index'] ?? 0);
+        $total = max(1, count($paths));
         if ($from === 0 && $paths === []) {
             $work['phase'] = 'finish';
             $work['percent'] = 88;
 
             return ['ok' => true];
         }
-
-        $remaining = array_slice($paths, $from);
-        if ($remaining === []) {
+        if ($from >= count($paths)) {
             $work['phase'] = 'finish';
             $work['percent'] = 88;
 
             return ['ok' => true];
         }
 
-        $batch = [];
-        $batchBytes = 0;
-        foreach ($remaining as $rel) {
-            $batch[] = $rel;
-            $batchBytes += (int) ($map[$rel]['size'] ?? 0);
-            if (count($batch) >= 200 || $batchBytes >= 16 * 1024 * 1024) {
-                break;
+        $lastReport = $from;
+        while ($from < count($paths) && ! self::slice_exhausted($started, max(8, $budget - 2))) {
+            $batch = [];
+            $batchBytes = 0;
+            $limit = count($paths);
+            for ($i = $from; $i < $limit; $i++) {
+                $rel = $paths[$i];
+                $batch[] = $rel;
+                $batchBytes += (int) ($map[$rel]['size'] ?? 0);
+                if (count($batch) >= 600 || $batchBytes >= 48 * 1024 * 1024) {
+                    break;
+                }
             }
-            if (self::slice_exhausted($started, $budget) && $batch !== []) {
-                break;
+
+            $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
+            if (! ($append['ok'] ?? false)) {
+                if (! empty($append['rebuild']) && $from > 0) {
+                    @unlink($zipFile);
+                    $work['zip_index'] = 0;
+                    $work['percent'] = 48;
+                    self::clear_filemap_cache();
+                    WWC_Agent_Job_Progress::report(48, 'ZIP war beschädigt – Aufbau neu…', true);
+
+                    return ['ok' => true];
+                }
+
+                return $append;
+            }
+
+            $from += count($batch);
+            $work['zip_index'] = $from;
+            $work['percent'] = 50 + (int) round(($from / $total) * 36);
+            if ($from - $lastReport >= 400 || $from >= count($paths)) {
+                WWC_Agent_Job_Progress::report(
+                    (int) $work['percent'],
+                    'ZIP '.$from.'/'.$total,
+                    true
+                );
+                $lastReport = $from;
             }
         }
 
-        $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
-        if (! ($append['ok'] ?? false)) {
-            if (! empty($append['rebuild']) && $from > 0) {
-                @unlink($zipFile);
-                $work['zip_index'] = 0;
-                $work['percent'] = 48;
-                WWC_Agent_Job_Progress::report(48, 'ZIP war beschädigt – Aufbau neu…', true);
-
-                return ['ok' => true];
-            }
-
-            return $append;
+        if ($from > $lastReport) {
+            WWC_Agent_Job_Progress::report((int) $work['percent'], 'ZIP '.$from.'/'.$total, true);
         }
 
-        $work['zip_index'] = $from + count($batch);
-        $total = max(1, count($paths));
-        $work['percent'] = 50 + (int) round(($work['zip_index'] / $total) * 36);
-        WWC_Agent_Job_Progress::report(
-            (int) $work['percent'],
-            'ZIP '.$work['zip_index'].'/'.$total,
-            true
-        );
-
-        if ($work['zip_index'] >= count($paths)) {
+        if ($from >= count($paths)) {
             $work['phase'] = 'finish';
             $work['percent'] = 88;
         }
@@ -1709,9 +1722,39 @@ final class WWC_Agent_Backup
         }
     }
 
-    private static function slice_budget(): int
+    /**
+     * @return array{0: array<string, mixed>, 1: list<string>}
+     */
+    private static function cached_filemap(string $dir): array
     {
-        return 18;
+        static $cachedDir = '';
+        static $map = [];
+        static $paths = [];
+        $dir = rtrim($dir, '/');
+        if ($dir === '') {
+            $cachedDir = '';
+            $map = [];
+            $paths = [];
+
+            return [[], []];
+        }
+        if ($cachedDir !== $dir) {
+            $map = self::read_json_file($dir.'/filemap.json') ?? [];
+            $paths = array_keys($map);
+            $cachedDir = $dir;
+        }
+
+        return [$map, $paths];
+    }
+
+    private static function clear_filemap_cache(): void
+    {
+        self::cached_filemap('');
+    }
+
+    private static function slice_budget(string $phase = ''): int
+    {
+        return $phase === 'zip' ? 42 : 18;
     }
 
     private static function slice_exhausted(float $started, int $budget): bool
