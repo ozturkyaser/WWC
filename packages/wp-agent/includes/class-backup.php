@@ -1182,6 +1182,22 @@ final class WWC_Agent_Backup
             $i = (int) $work['table_i'];
             $table = (string) $tables[$i];
 
+            if (! empty($work['table_started']) && self::skip_table_data($table)) {
+                fwrite($fh, "-- WWC: Rest übersprungen (Protokoll): {$table}\n\n");
+                $work['table_i'] = $i + 1;
+                $work['table_started'] = false;
+                $work['pk'] = null;
+                $work['last_pk'] = null;
+                $work['offset'] = 0;
+                $work['percent'] = 12 + (int) round((($i + 1) / $total) * 16);
+                WWC_Agent_Job_Progress::report(
+                    (int) $work['percent'],
+                    'DB '.$table.' übersprungen (Protokoll, Rest)',
+                    true
+                );
+                continue;
+            }
+
             if (empty($work['table_started'])) {
                 $create = $wpdb->get_row('SHOW CREATE TABLE `'.$table.'`', ARRAY_N);
                 if (! $create) {
@@ -1290,6 +1306,11 @@ final class WWC_Agent_Backup
             'wfknownfilelist',
             'wfhits',
             'wfleechers',
+            'redirection_404',
+            'redirection_logs',
+            'itsec_logs',
+            'itsec_lockouts',
+            'e_events',
         ] as $needle) {
             if (str_contains($name, $needle)) {
                 return true;
