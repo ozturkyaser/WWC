@@ -31,7 +31,8 @@ class ReleaseService
     public function deploy(bool $force = false): array
     {
         $repo = $this->repoPath();
-        if (! is_dir($repo.'/.git')) {
+        $script = $this->deployCommand();
+        if ($script === null && ! is_dir($repo.'/.git')) {
             return ['ok' => false, 'message' => 'Git-Repository nicht gefunden (WWC_REPO_PATH).', 'log' => []];
         }
 
@@ -44,6 +45,10 @@ class ReleaseService
         $log = [];
         $this->writeDeployState('running', 'Deploy gestartet…', $log);
         try {
+            if ($script !== null) {
+                return $this->deployViaScript($script, $log);
+            }
+
             $remote = (string) config('wwc.deploy_remote', 'origin');
             $branch = (string) config('wwc.deploy_branch', 'main');
 
@@ -51,7 +56,7 @@ class ReleaseService
             $fetch = $this->git(['fetch', '--prune', $remote], $repo, 90);
             $log[] = $fetch['output'];
             if (! $fetch['ok']) {
-                throw new \RuntimeException('git fetch fehlgeschlagen: '.$fetch['output']);
+                throw new \RuntimeException($this->fetchFailureMessage($fetch['output']));
             }
 
             $target = $remote.'/'.$branch;
@@ -123,6 +128,56 @@ class ReleaseService
         $real = realpath($path);
 
         return $real !== false ? $real : rtrim($path, '/');
+    }
+
+    private function deployCommand(): ?array
+    {
+        $script = (string) config('wwc.deploy_command', '/usr/local/bin/wwc-deploy');
+        if ($script === '' || ! is_file($script)) {
+            return null;
+        }
+        $branch = (string) config('wwc.deploy_branch', 'main');
+        if (is_executable($script)) {
+            return [$script, $branch];
+        }
+
+        return ['sudo', '-n', $script, $branch];
+    }
+
+    /**
+     * @param  list<string>  $command
+     * @param  list<string>  $log
+     * @return array{ok:bool,message:string,log:list<string>,status?:array<string,mixed>}
+     */
+    private function deployViaScript(array $command, array $log): array
+    {
+        $log[] = $this->step(implode(' ', $command));
+        $result = Process::timeout(180)->run($command);
+        $out = trim($result->output()."\n".$result->errorOutput());
+        $log[] = $out;
+        if (! $result->successful()) {
+            throw new \RuntimeException('wwc-deploy fehlgeschlagen: '.$out);
+        }
+        $status = $this->status();
+        $this->writeDeployState('ok', 'Deploy fertig: '.$status['version'], $log);
+
+        return [
+            'ok' => true,
+            'message' => 'Aktueller Stand von Git ist live: '.$status['version'],
+            'log' => $this->trimLog($log),
+            'status' => $status,
+        ];
+    }
+
+    private function fetchFailureMessage(string $output): string
+    {
+        if (str_contains($output, 'Permission denied') || str_contains($output, 'FETCH_HEAD')) {
+            return 'git fetch fehlgeschlagen: keine Schreibrechte auf .git (FETCH_HEAD). '
+                .'Auf dem Server als root ausführen: /usr/local/bin/wwc-deploy main. '
+                .$output;
+        }
+
+        return 'git fetch fehlgeschlagen: '.$output;
     }
 
     /** @return array<string, mixed> */
