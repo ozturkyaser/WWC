@@ -1509,7 +1509,20 @@ final class WWC_Agent_Backup
 
             $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
             if (! ($append['ok'] ?? false)) {
-                if (! empty($append['rebuild']) && $from > 0) {
+                $kept = self::recover_zip_progress($zipFile);
+                if ($kept >= 0) {
+                    $from = $kept;
+                    $work['zip_index'] = $from;
+                    $work['percent'] = 50 + (int) round(($from / $total) * 36);
+                    WWC_Agent_Job_Progress::report(
+                        (int) $work['percent'],
+                        'ZIP-Schreibfehler abgefangen, weiter bei '.$from.'/'.$total,
+                        true
+                    );
+
+                    return ['ok' => true];
+                }
+                if ($from > 0) {
                     @unlink($zipFile);
                     $work['zip_index'] = 0;
                     $work['percent'] = 48;
@@ -1553,22 +1566,88 @@ final class WWC_Agent_Backup
      */
     private static function zip_append(string $zipFile, array $batch, string $base, bool $create): array
     {
-        $cli = self::zip_append_cli($zipFile, $batch, $base, $create);
-        if (is_array($cli) && ($cli['ok'] ?? false)) {
-            return $cli;
+        $lock = @fopen($zipFile.'.lock', 'c');
+        if (is_resource($lock)) {
+            flock($lock, LOCK_EX);
         }
+        try {
+            $cli = self::zip_append_cli($zipFile, $batch, $base, $create);
+            if (is_array($cli) && ($cli['ok'] ?? false)) {
+                return $cli;
+            }
 
-        $php = self::zip_append_php($zipFile, $batch, $base, $create);
-        if ($php['ok'] ?? false) {
-            return $php;
-        }
-        if (! $create && is_file($zipFile)) {
+            $php = self::zip_append_php($zipFile, $batch, $base, $create);
+            if ($php['ok'] ?? false) {
+                return $php;
+            }
             $cliError = is_array($cli) ? ($cli['error'] ?? null) : null;
 
-            return ['ok' => false, 'rebuild' => true, 'error' => (string) ($php['error'] ?? $cliError ?? 'ZIP beschädigt')];
+            return ['ok' => false, 'error' => (string) ($php['error'] ?? $cliError ?? 'ZIP schreiben fehlgeschlagen')];
+        } finally {
+            if (is_resource($lock)) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
+    }
+
+    private static function zip_entry_count(string $zipFile): int
+    {
+        if (! is_file($zipFile) || ! class_exists('ZipArchive')) {
+            return -1;
+        }
+        $zip = new ZipArchive();
+        if ($zip->open($zipFile) !== true) {
+            return -1;
+        }
+        $count = (int) $zip->numFiles;
+        $zip->close();
+
+        return $count;
+    }
+
+    private static function zip_try_fix(string $zipFile): bool
+    {
+        $bin = self::find_binary('zip');
+        if ($bin === null || ! self::shell_available() || ! is_file($zipFile)) {
+            return false;
+        }
+        $fixed = $zipFile.'.fix';
+        @unlink($fixed);
+        $out = [];
+        $code = 0;
+        @exec(escapeshellarg($bin).' -F '.escapeshellarg($zipFile).' --out '.escapeshellarg($fixed).' 2>&1', $out, $code);
+        if (self::zip_entry_count($fixed) >= 0) {
+            @unlink($zipFile);
+            @rename($fixed, $zipFile);
+
+            return true;
+        }
+        @unlink($fixed);
+        $code = 0;
+        @exec(escapeshellarg($bin).' -FF '.escapeshellarg($zipFile).' --out '.escapeshellarg($fixed).' 2>&1', $out, $code);
+        if (self::zip_entry_count($fixed) >= 0) {
+            @unlink($zipFile);
+            @rename($fixed, $zipFile);
+
+            return true;
+        }
+        @unlink($fixed);
+
+        return false;
+    }
+
+    private static function recover_zip_progress(string $zipFile): int
+    {
+        $count = self::zip_entry_count($zipFile);
+        if ($count >= 0) {
+            return $count;
+        }
+        if (self::zip_try_fix($zipFile)) {
+            return self::zip_entry_count($zipFile);
         }
 
-        return $php;
+        return -1;
     }
 
     /**
