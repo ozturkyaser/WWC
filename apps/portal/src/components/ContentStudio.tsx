@@ -22,6 +22,7 @@ type Result = {
   url?: string;
   id?: number;
   title?: string;
+  key?: string;
 };
 
 type Draft = {
@@ -53,7 +54,8 @@ type Studio = {
 };
 
 function opLabel(op: Record<string, unknown> | Result): string {
-  const name = String(op.op || "Änderung");
+  const rec = op as Record<string, unknown>;
+  const name = String(rec.op || "Änderung");
   const map: Record<string, string> = {
     create_post: "Neue Seite/Beitrag",
     update_post: "Seite anpassen",
@@ -61,7 +63,7 @@ function opLabel(op: Record<string, unknown> | Result): string {
     set_logo: "Logo",
     upload_media: "Datei",
   };
-  const title = op.title ? String(op.title) : op.id ? `#${op.id}` : op.key ? String(op.key) : "";
+  const title = rec.title ? String(rec.title) : rec.id ? `#${rec.id}` : rec.key ? String(rec.key) : "";
   return `${map[name] || name}${title ? `: ${title}` : ""}`;
 }
 
