@@ -125,7 +125,11 @@ final class WWC_Agent_Backup_Uploader
         $manifest['sha256'] = $sha256;
         @file_put_contents($manifestFile, wp_json_encode($manifest));
 
-        foreach (['database.sql', 'files.zip', 'changed.zip', 'wwc-export.zip', 'files.empty'] as $name) {
+        $heavy = array_merge(
+            ['database.sql', 'changed.zip', 'wwc-export.zip', 'files.empty'],
+            WWC_Agent_Backup::list_file_archives($dir)
+        );
+        foreach (array_unique($heavy) as $name) {
             $file = $dir.'/'.$name;
             if (is_file($file)) {
                 @unlink($file);
@@ -146,7 +150,19 @@ final class WWC_Agent_Backup_Uploader
         }
         $manifest = json_decode((string) file_get_contents($manifestFile), true) ?: [];
 
-        $needsArchive = ! empty($manifest['archive']) && ! is_file($dir.'/'.$manifest['archive']);
+        $archives = [];
+        if (is_array($manifest['archives'] ?? null)) {
+            $archives = array_values(array_filter(array_map('strval', $manifest['archives'])));
+        } elseif (! empty($manifest['archive'])) {
+            $archives = [(string) $manifest['archive']];
+        }
+        $needsArchive = false;
+        foreach ($archives as $name) {
+            if ($name !== '' && ! is_file($dir.'/'.$name)) {
+                $needsArchive = true;
+                break;
+            }
+        }
         $needsDb = ! empty($manifest['database']) && ! is_file($dir.'/'.$manifest['database']);
         if (! $needsArchive && ! $needsDb) {
             return ['ok' => true, 'downloaded' => false];

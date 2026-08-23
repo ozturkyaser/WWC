@@ -277,15 +277,29 @@ class DevCloneService
 
         $html = $dir.'/html';
         @mkdir($html, 0755, true);
-        if (is_file($work.'/files.zip')) {
+        $parts = [];
+        foreach (glob($work.'/files*.zip') ?: [] as $part) {
+            $base = basename((string) $part);
+            if ($base === 'files.zip' || preg_match('/^files-\d+\.zip$/', $base) === 1) {
+                $parts[] = (string) $part;
+            }
+        }
+        usort($parts, static function (string $a, string $b): int {
+            $na = basename($a) === 'files.zip' ? 1 : (int) preg_replace('/\D+/', '', basename($a));
+            $nb = basename($b) === 'files.zip' ? 1 : (int) preg_replace('/\D+/', '', basename($b));
+
+            return $na <=> $nb;
+        });
+        if ($parts === [] && $isBase) {
+            throw new RuntimeException('Voll-Backup enthält kein files.zip.');
+        }
+        foreach ($parts as $part) {
             $inner = new ZipArchive;
-            if ($inner->open($work.'/files.zip') !== true) {
-                throw new RuntimeException("files.zip nicht lesbar: {$backup->backup_id}");
+            if ($inner->open($part) !== true) {
+                throw new RuntimeException(basename($part).' nicht lesbar: '.$backup->backup_id);
             }
             $inner->extractTo($html);
             $inner->close();
-        } elseif ($isBase) {
-            throw new RuntimeException('Voll-Backup enthält kein files.zip.');
         }
 
         $manifest = [];

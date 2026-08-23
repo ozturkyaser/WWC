@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 final class WWC_Agent_Backup
 {
+    /** UpdraftPlus-style: never grow one ZIP past this – cheap hosts choke on zip -g. */
+    private const ZIP_SPLIT_BYTES = 80 * 1024 * 1024;
+
     public static function root(): string
     {
         $dir = trailingslashit(WP_CONTENT_DIR).'wwc-backups';
@@ -45,12 +48,12 @@ final class WWC_Agent_Backup
             if ($id === '' || isset($seen[$id]) || is_file($dir.'/manifest.json')) {
                 continue;
             }
-            if (! is_file($dir.'/work.json') && ! is_file($dir.'/files.zip') && ! is_file($dir.'/database.sql')) {
+            if (! is_file($dir.'/work.json') && self::list_file_archives($dir) === [] && ! is_file($dir.'/database.sql')) {
                 continue;
             }
             $work = self::read_json_file($dir.'/work.json');
             $size = 0;
-            foreach (['files.zip', 'database.sql'] as $name) {
+            foreach (array_merge(self::list_file_archives($dir), ['database.sql']) as $name) {
                 if (is_file($dir.'/'.$name)) {
                     $size += (int) filesize($dir.'/'.$name);
                 }
@@ -468,6 +471,7 @@ final class WWC_Agent_Backup
             'files' => $changed,
             'database' => 'database.sql',
             'archive' => file_exists($filesZip) ? 'files.zip' : null,
+            'archives' => file_exists($filesZip) ? ['files.zip'] : [],
         ];
         file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
         $sizeBytes = self::dir_size($dir);
@@ -532,7 +536,8 @@ final class WWC_Agent_Backup
         if ($zip->open($export, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             return ['ok' => false, 'error' => 'Cannot create export zip'];
         }
-        foreach (['manifest.json', 'database.sql', 'files.zip', 'changed.zip'] as $name) {
+        $names = array_merge(['manifest.json', 'database.sql', 'changed.zip'], self::list_file_archives($dir));
+        foreach (array_unique($names) as $name) {
             $file = $dir.'/'.$name;
             if (is_file($file)) {
                 $zip->addFile($file, $name);
@@ -667,8 +672,21 @@ final class WWC_Agent_Backup
 
         foreach ($chain as $step) {
             $dir = self::root().'/'.$step['id'];
-            if (! empty($step['archive']) && file_exists($dir.'/'.$step['archive'])) {
-                $unzip = self::unzip_to($dir.'/'.$step['archive'], ABSPATH);
+            $archives = [];
+            if (is_array($step['archives'] ?? null)) {
+                $archives = array_values(array_filter(array_map('strval', $step['archives'])));
+            } elseif (! empty($step['archive'])) {
+                $archives = [(string) $step['archive']];
+            }
+            if ($archives === []) {
+                $archives = self::list_file_archives($dir);
+            }
+            foreach ($archives as $archive) {
+                $path = $dir.'/'.$archive;
+                if (! is_file($path)) {
+                    continue;
+                }
+                $unzip = self::unzip_to($path, ABSPATH);
                 if (! $unzip['ok']) {
                     return $unzip;
                 }
@@ -1464,6 +1482,8 @@ final class WWC_Agent_Backup
         self::write_json_file($work['dir'].'/filemap.json', $map);
         $work['phase'] = 'zip';
         $work['zip_index'] = 0;
+        $work['zip_part'] = 1;
+        $work['zip_part_from'] = 0;
         $work['percent'] = 48;
         WWC_Agent_Job_Progress::log($work['file_count'].' Dateien erfasst', 48, true);
 
@@ -1471,13 +1491,76 @@ final class WWC_Agent_Backup
     }
 
     /**
-     * @param  array<string, mixed>  $work
-     * @return array{ok:bool,error?:string}
+     * UpdraftPlus-style split: files.zip, files-2.zip, … each ~80 MB.
+     * Growing one multi-GB ZIP with `zip -g` is what fails on shared hosts.
+     *
+     * @return list<string>
      */
+    public static function list_file_archives(string $dir): array
+    {
+        $dir = rtrim($dir, '/');
+        $names = [];
+        foreach (glob($dir.'/files*.zip') ?: [] as $path) {
+            if (! is_file($path)) {
+                continue;
+            }
+            $base = basename($path);
+            if ($base === 'files.zip' || preg_match('/^files-\d+\.zip$/', $base) === 1) {
+                $names[] = $base;
+            }
+        }
+        usort($names, static function (string $a, string $b): int {
+            $na = $a === 'files.zip' ? 1 : (int) preg_replace('/\D+/', '', $a);
+            $nb = $b === 'files.zip' ? 1 : (int) preg_replace('/\D+/', '', $b);
+
+            return $na <=> $nb;
+        });
+
+        return $names;
+    }
+
+    private static function zip_part_file(string $dir, int $part): string
+    {
+        $dir = rtrim($dir, '/');
+
+        return $part <= 1 ? $dir.'/files.zip' : $dir.'/files-'.$part.'.zip';
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{0:string,1:bool}
+     */
+    private static function prepare_zip_part(array &$work, int $from): array
+    {
+        $dir = rtrim((string) $work['dir'], '/');
+        $part = max(1, (int) ($work['zip_part'] ?? 1));
+        $file = self::zip_part_file($dir, $part);
+        $size = is_file($file) ? (int) filesize($file) : 0;
+        if ($size >= self::ZIP_SPLIT_BYTES) {
+            $part++;
+            $work['zip_part'] = $part;
+            $work['zip_part_from'] = $from;
+            $file = self::zip_part_file($dir, $part);
+            $size = 0;
+            WWC_Agent_Job_Progress::log(
+                'ZIP-Teil '.$part.' (max 80 MB, wie UpdraftPlus)',
+                (int) ($work['percent'] ?? 50),
+                true
+            );
+        }
+        if (! isset($work['zip_part'])) {
+            $work['zip_part'] = $part;
+        }
+        if (! isset($work['zip_part_from'])) {
+            $work['zip_part_from'] = $part <= 1 ? 0 : $from;
+        }
+
+        return [$file, $size === 0];
+    }
+
     private static function zip_files_slice(array &$work, float $started, int $budget): array
     {
         [$map, $paths] = self::cached_filemap($work['dir']);
-        $zipFile = $work['dir'].'/files.zip';
         $from = (int) ($work['zip_index'] ?? 0);
         $total = max(1, count($paths));
         if ($from === 0 && $paths === []) {
@@ -1495,6 +1578,10 @@ final class WWC_Agent_Backup
 
         $lastReport = $from;
         while ($from < count($paths) && ! self::slice_exhausted($started, max(8, $budget - 2))) {
+            [$zipFile, $create] = self::prepare_zip_part($work, $from);
+            $partFrom = (int) ($work['zip_part_from'] ?? 0);
+            $part = (int) ($work['zip_part'] ?? 1);
+
             $batch = [];
             $batchBytes = 0;
             $limit = count($paths);
@@ -1502,32 +1589,36 @@ final class WWC_Agent_Backup
                 $rel = $paths[$i];
                 $batch[] = $rel;
                 $batchBytes += (int) ($map[$rel]['size'] ?? 0);
-                if (count($batch) >= 600 || $batchBytes >= 48 * 1024 * 1024) {
+                if (count($batch) >= 400 || $batchBytes >= 24 * 1024 * 1024) {
                     break;
                 }
             }
 
-            $append = self::zip_append($zipFile, $batch, ABSPATH, $from === 0);
+            $append = self::zip_append($zipFile, $batch, ABSPATH, $create);
             if (! ($append['ok'] ?? false)) {
                 $kept = self::recover_zip_progress($zipFile);
                 if ($kept >= 0) {
-                    $from = $kept;
+                    $from = $partFrom + $kept;
                     $work['zip_index'] = $from;
                     $work['percent'] = 50 + (int) round(($from / $total) * 36);
                     WWC_Agent_Job_Progress::report(
                         (int) $work['percent'],
-                        'ZIP-Schreibfehler abgefangen, weiter bei '.$from.'/'.$total,
+                        'ZIP-Teil '.$part.' repariert, weiter bei '.$from.'/'.$total,
                         true
                     );
 
                     return ['ok' => true];
                 }
-                if ($from > 0) {
+                if ($from > $partFrom) {
                     @unlink($zipFile);
-                    $work['zip_index'] = 0;
-                    $work['percent'] = 48;
+                    $work['zip_index'] = $partFrom;
+                    $work['percent'] = 50 + (int) round(($partFrom / $total) * 36);
                     self::clear_filemap_cache();
-                    WWC_Agent_Job_Progress::report(48, 'ZIP war beschädigt – Aufbau neu…', true);
+                    WWC_Agent_Job_Progress::report(
+                        (int) $work['percent'],
+                        'ZIP-Teil '.$part.' neu aufbauen…',
+                        true
+                    );
 
                     return ['ok' => true];
                 }
@@ -1541,7 +1632,7 @@ final class WWC_Agent_Backup
             if ($from - $lastReport >= 400 || $from >= count($paths)) {
                 WWC_Agent_Job_Progress::report(
                     (int) $work['percent'],
-                    'ZIP '.$from.'/'.$total,
+                    'ZIP '.$from.'/'.$total.' (Teil '.$part.')',
                     true
                 );
                 $lastReport = $from;
@@ -1549,7 +1640,11 @@ final class WWC_Agent_Backup
         }
 
         if ($from > $lastReport) {
-            WWC_Agent_Job_Progress::report((int) $work['percent'], 'ZIP '.$from.'/'.$total, true);
+            WWC_Agent_Job_Progress::report(
+                (int) $work['percent'],
+                'ZIP '.$from.'/'.$total.' (Teil '.((int) ($work['zip_part'] ?? 1)).')',
+                true
+            );
         }
 
         if ($from >= count($paths)) {
@@ -1732,6 +1827,10 @@ final class WWC_Agent_Backup
         $fileCount = count($fileMap);
 
         WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
+        $archives = self::list_file_archives($dir);
+        if ($archives === []) {
+            $archives = ['files.zip'];
+        }
         $manifest = [
             'id' => $id,
             'type' => 'full',
@@ -1743,7 +1842,8 @@ final class WWC_Agent_Backup
             'file_count' => $fileCount,
             'files' => $fileMap,
             'database' => 'database.sql',
-            'archive' => 'files.zip',
+            'archive' => $archives[0],
+            'archives' => $archives,
             'skipped' => ['count' => (int) ($skipped['count'] ?? 0), 'bytes' => (int) ($skipped['bytes'] ?? 0)],
             'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
         ];
@@ -1804,6 +1904,9 @@ final class WWC_Agent_Backup
             'table_i' => 0,
             'table_started' => false,
             'skipped' => ['count' => 0, 'bytes' => 0, 'samples' => []],
+            'zip_index' => 0,
+            'zip_part' => 1,
+            'zip_part_from' => 0,
         ];
         self::save_work($jobId, $work);
 
