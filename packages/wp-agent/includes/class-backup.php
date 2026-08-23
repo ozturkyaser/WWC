@@ -1313,6 +1313,12 @@ final class WWC_Agent_Backup
     private static function skip_table_data(string $table): bool
     {
         $name = strtolower($table);
+        // Wordfence settings / 2FA must stay restorable.
+        foreach (['wfconfig', 'wfls_2fa', 'wfls_settings'] as $keep) {
+            if (str_contains($name, $keep)) {
+                return false;
+            }
+        }
         foreach ([
             'actionscheduler_logs',
             'woocommerce_sessions',
@@ -1320,10 +1326,24 @@ final class WWC_Agent_Backup
             'imagify_files',
             'imagify_folders',
             'litespeed_img_optming',
-            'wfhoover',
+            // Wordfence: scan results, caches, traffic/login logs – rebuilt after restore
+            'wffilemods',
+            'wffilechanges',
             'wfknownfilelist',
             'wfhits',
+            'wfhoover',
             'wfleechers',
+            'wfstatus',
+            'wflogins',
+            'wflocs',
+            'wfreversecache',
+            'wfsnipcache',
+            'wfpendingissues',
+            'wfnotifications',
+            'wflivetraffichuman',
+            'wfcrawlers',
+            'wftrafficrates',
+            'wfwaffailures',
             'redirection_404',
             'redirection_logs',
             'itsec_logs',
