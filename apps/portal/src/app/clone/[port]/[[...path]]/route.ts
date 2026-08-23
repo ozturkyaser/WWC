@@ -55,7 +55,7 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
 
   const out = new Headers();
   upstream.headers.forEach((value, key) => {
-    if (["transfer-encoding", "connection", "keep-alive"].includes(key.toLowerCase())) {
+    if (["transfer-encoding", "connection", "keep-alive", "x-frame-options", "content-security-policy"].includes(key.toLowerCase())) {
       return;
     }
     if (key.toLowerCase() === "location") {

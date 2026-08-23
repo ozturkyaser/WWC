@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
 type Intel = {
@@ -15,13 +15,31 @@ type Intel = {
   counts?: { pages?: number; posts?: number; plugins_active?: number };
 };
 
+type Result = {
+  ok?: boolean;
+  op?: string;
+  error?: string;
+  url?: string;
+  id?: number;
+  title?: string;
+};
+
 type Draft = {
   prompt?: string;
   summary?: string;
   status?: string;
   ops?: Array<Record<string, unknown>>;
   error?: string | null;
-  dev_results?: Array<{ ok?: boolean; error?: string; url?: string }>;
+  dev_results?: Result[];
+};
+
+type HistoryItem = {
+  prompt?: string;
+  summary?: string;
+  status?: string;
+  error?: string | null;
+  dev_results?: Result[];
+  at?: string;
 };
 
 type Studio = {
@@ -29,9 +47,23 @@ type Studio = {
   intel_source?: string | null;
   scanned_at?: string | null;
   draft?: Draft | null;
+  history?: HistoryItem[];
   clone_ready?: boolean;
   clone_url?: string | null;
 };
+
+function opLabel(op: Record<string, unknown> | Result): string {
+  const name = String(op.op || "Änderung");
+  const map: Record<string, string> = {
+    create_post: "Neue Seite/Beitrag",
+    update_post: "Seite anpassen",
+    set_option: "Einstellung",
+    set_logo: "Logo",
+    upload_media: "Datei",
+  };
+  const title = op.title ? String(op.title) : op.id ? `#${op.id}` : op.key ? String(op.key) : "";
+  return `${map[name] || name}${title ? `: ${title}` : ""}`;
+}
 
 export function ContentStudio({
   siteId,
@@ -46,8 +78,17 @@ export function ContentStudio({
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const intel = studio.intel;
   const draft = studio.draft;
+  const results = draft?.dev_results || [];
+  const previewUrl = preview || results.find((r) => r.ok && r.url)?.url || null;
+
+  useEffect(() => {
+    if (initial) {
+      setStudio(initial);
+    }
+  }, [initial]);
 
   async function run(path: string, body?: unknown) {
     setBusy(true);
@@ -58,6 +99,18 @@ export function ContentStudio({
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
       setStudio(res.data);
+      const firstUrl = res.data.draft?.dev_results?.find((r) => r.ok && r.url)?.url;
+      if (firstUrl) {
+        setPreview(firstUrl);
+        setMsg("Änderung ist in der isolierten Umgebung. Prüfe die Vorschau unten.");
+      } else if (res.data.draft?.status === "applied_dev") {
+        setMsg("Änderung ist in der isolierten Umgebung umgesetzt.");
+      } else if (res.data.draft?.error) {
+        setMsg(res.data.draft.error);
+      }
+      if (path === "run") {
+        setPrompt("");
+      }
       await onRefresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Fehler");
@@ -82,7 +135,7 @@ export function ContentStudio({
         setMsg("Datei liegt auf dem Server. Dev-Kopie erstellen, dann erneut hochladen.");
         return;
       }
-      setMsg("Logo liegt in der Dev-Kopie. Jetzt „In Dev anwenden“.");
+      setMsg("Logo liegt in der Dev-Kopie. Jetzt den Auftrag „Logo ersetzen“ umsetzen oder „In Dev anwenden“.");
       await onRefresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Upload fehlgeschlagen");
@@ -95,16 +148,21 @@ export function ContentStudio({
     <div className="surface surface-pad">
       <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>KI-Editor</h3>
       <p className="muted" style={{ marginTop: 0 }}>
-        Die KI scannt die isolierte Umgebung (Theme, Plugins, Editor, Seiten) und setzt Änderungen
-        zuerst dort um. Live erst nach Freigabe.
+        Auftrag beschreiben – die KI setzt ihn sofort in der isolierten Umgebung um.
+        Das Ergebnis erscheint hier mit Vorschau. Live erst nach Freigabe.
       </p>
       {!studio.clone_ready && (
         <p className="error">Zuerst im Tab Development die isolierte Umgebung auf dem WWC-Server erstellen.</p>
       )}
-      {msg && <p className={msg.includes("fehl") || msg.includes("Fehler") ? "error" : "muted"}>{msg}</p>}
+      {busy && <p className="muted">KI arbeitet in der Dev-Umgebung… Scan, Plan und Umsetzung können eine Minute dauern.</p>}
+      {msg && (
+        <p className={msg.includes("fehl") || msg.includes("Fehler") || msg.includes("nicht") ? "error" : "muted"}>
+          {msg}
+        </p>
+      )}
 
       <div className="row" style={{ marginBottom: 14 }}>
-        <button className="btn" type="button" disabled={busy || !studio.clone_ready} onClick={() => run("scan")}>
+        <button className="btn secondary" type="button" disabled={busy || !studio.clone_ready} onClick={() => run("scan")}>
           Dev-Umgebung scannen
         </button>
         {studio.clone_url && (
@@ -161,40 +219,99 @@ export function ContentStudio({
           value={prompt}
           placeholder="z. B. Neue Landingpage für Flottenleasing, oder Blogbeitrag über Winterreifen, oder Logo ersetzen…"
           onChange={(e) => setPrompt(e.target.value)}
+          disabled={busy}
         />
       </div>
-      <button className="btn" type="button" disabled={busy || !prompt.trim() || !intel} onClick={() => run("plan", { prompt })}>
-        Plan erzeugen
-      </button>
+      <div className="row">
+        <button
+          className="btn"
+          type="button"
+          disabled={busy || !prompt.trim() || !studio.clone_ready}
+          onClick={() => run("run", { prompt })}
+        >
+          In Dev umsetzen
+        </button>
+        <button
+          className="btn secondary"
+          type="button"
+          disabled={busy || !prompt.trim()}
+          onClick={() => run("plan", { prompt })}
+        >
+          Nur Plan
+        </button>
+      </div>
 
       {draft?.summary && (
         <div style={{ marginTop: 16 }}>
           <p>
-            <strong>Plan</strong>{" "}
+            <strong>Ergebnis</strong>{" "}
+            {draft.status === "planned" && <span className="badge pending">geplant</span>}
             {draft.status === "applied_dev" && <span className="badge completed">in Dev</span>}
             {draft.status === "promoted" && <span className="badge completed">live</span>}
             {draft.status === "failed" && <span className="badge failed">fehlgeschlagen</span>}
             {draft.status === "promoting" && <span className="badge running">wird live übernommen…</span>}
           </p>
+          {draft.prompt && <p className="muted" style={{ marginTop: 0 }}>Auftrag: {draft.prompt}</p>}
           <p className="muted">{draft.summary}</p>
           {(draft.ops || []).map((op, i) => (
             <div key={i} className="cell-sub" style={{ fontSize: "0.82rem" }}>
-              {(op.op as string) || "op"}
-              {op.title ? `: ${String(op.title)}` : ""}
-              {op.id ? ` #${String(op.id)}` : ""}
-              {op.key ? ` ${String(op.key)}` : ""}
+              {opLabel(op)}
             </div>
           ))}
           {draft.error && <div className="error">{draft.error}</div>}
+
+          {results.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <h4 style={{ fontSize: "0.95rem", margin: "0 0 8px" }}>Was geändert wurde</h4>
+              {results.map((row, i) => (
+                <div key={i} className="row" style={{ justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap" }}>
+                  <span>
+                    <span className={`badge ${row.ok ? "completed" : "failed"}`}>{row.ok ? "OK" : "Fehler"}</span>{" "}
+                    {opLabel(row)}
+                    {row.error ? <span className="error"> — {row.error}</span> : null}
+                  </span>
+                  {row.url && (
+                    <span className="row" style={{ gap: 8 }}>
+                      <button className="btn secondary" type="button" onClick={() => setPreview(row.url || null)}>
+                        Vorschau
+                      </button>
+                      <a className="btn secondary" href={row.url} target="_blank" rel="noreferrer">
+                        In Dev öffnen
+                      </a>
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {previewUrl && (
+            <div style={{ marginTop: 14 }}>
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                <strong>Vorschau in der Dev-Umgebung</strong>
+                <a href={previewUrl} target="_blank" rel="noreferrer">
+                  Vollbild
+                </a>
+              </div>
+              <iframe
+                title="Dev-Vorschau"
+                src={previewUrl}
+                style={{ width: "100%", height: 420, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, background: "#fff" }}
+              />
+            </div>
+          )}
+
           <div className="row" style={{ marginTop: 12 }}>
-            <button
-              className="btn"
-              type="button"
-              disabled={busy || !studio.clone_ready || draft.status === "promoting"}
-              onClick={() => run("apply-dev")}
-            >
-              In Dev anwenden
-            </button>
+            {draft.status === "planned" && (
+              <button
+                className="btn"
+                type="button"
+                disabled={busy || !studio.clone_ready}
+                onClick={() => run("apply-dev")}
+              >
+                Plan in Dev anwenden
+              </button>
+            )}
             <button
               className="btn secondary"
               type="button"
@@ -206,6 +323,25 @@ export function ContentStudio({
               Nach Prüfung live übernehmen
             </button>
           </div>
+        </div>
+      )}
+
+      {(studio.history || []).length > 1 && (
+        <div style={{ marginTop: 20 }}>
+          <h4 style={{ fontSize: "0.95rem" }}>Letzte Aufträge</h4>
+          {(studio.history || []).slice(1).map((item, i) => (
+            <div key={`${item.at || i}`} className="cell-sub" style={{ fontSize: "0.82rem", marginBottom: 6 }}>
+              <span className={`badge ${item.status === "applied_dev" ? "completed" : item.status === "failed" ? "failed" : "pending"}`}>
+                {item.status === "applied_dev" ? "in Dev" : item.status || ""}
+              </span>{" "}
+              {item.prompt || item.summary}
+              {(item.dev_results || []).filter((r) => r.url).map((r) => (
+                <a key={r.url} href={r.url} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>
+                  öffnen
+                </a>
+              ))}
+            </div>
+          ))}
         </div>
       )}
     </div>

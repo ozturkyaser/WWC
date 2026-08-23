@@ -30,9 +30,34 @@ class ContentStudioService
             'intel_source' => $studio['intel_source'] ?? null,
             'scanned_at' => $studio['scanned_at'] ?? null,
             'draft' => $studio['draft'] ?? null,
+            'history' => array_slice($studio['history'] ?? [], 0, 10),
             'clone_ready' => $this->clones->isReady($site),
             'clone_url' => $site->dev_clone['url'] ?? null,
         ];
+    }
+
+    /**
+     * Auftrag planen und sofort in der isolierten Umgebung umsetzen.
+     */
+    public function runOnDev(Site $site, string $prompt): array
+    {
+        if (! $this->clones->isReady($site)) {
+            throw new RuntimeException('Zuerst die isolierte Umgebung auf dem WWC-Server erstellen. Die KI arbeitet dort, nicht auf Live.');
+        }
+        $prompt = trim($prompt);
+        if ($prompt === '') {
+            throw new RuntimeException('Bitte beschreiben, was geändert werden soll.');
+        }
+
+        if (! is_array($site->content_studio['intel'] ?? null)) {
+            $intel = $this->clones->scanClone($site);
+            $this->storeIntel($site, $intel, 'clone');
+            $site->refresh();
+        }
+
+        $this->plan($site->fresh() ?? $site, $prompt);
+
+        return $this->applyDev($site->fresh() ?? $site);
     }
 
     public function scan(Site $site): array
@@ -102,11 +127,14 @@ class ContentStudioService
 
         $result = $this->clones->applyOnClone($site, $draft['ops']);
         $ok = (bool) ($result['ok'] ?? false);
-        $draft['dev_results'] = $result['results'] ?? [];
+        $draft['dev_results'] = $this->publicizeResults($site, $result['results'] ?? []);
         $draft['status'] = $ok ? 'applied_dev' : 'failed';
-        $draft['error'] = $ok ? null : 'Mindestens eine Änderung in der Dev-Kopie ist fehlgeschlagen.';
+        $draft['error'] = $ok
+            ? null
+            : ($this->firstResultError($draft['dev_results']) ?? 'Mindestens eine Änderung in der Dev-Kopie ist fehlgeschlagen.');
         $draft['applied_dev_at'] = now()->toIso8601String();
         $this->patchStudio($site, ['draft' => $draft]);
+        $this->rememberHistory($site->fresh() ?? $site, $draft);
 
         if ($ok) {
             try {
@@ -263,6 +291,7 @@ class ContentStudioService
                                 .'set_option (key in blogname|blogdescription|show_on_front|page_on_front|page_for_posts|posts_per_page, value), '
                                 .'set_logo (path oder media_id). '
                                 .'Kein Markdown. Page-Builder-Seiten (editor elementor/wpbakery/builder) nicht per content überschreiben – neue Gutenberg-Seite anlegen. '
+                                .'Neue Seiten/Beiträge in der isolierten Dev-Umgebung als publish anlegen, damit sie sofort sichtbar sind. '
                                 .'content als HTML oder Gutenberg-Blöcke. Zuerst in Dev, nie direkt live.',
                         ],
                         [
@@ -300,11 +329,11 @@ class ContentStudioService
         $lower = mb_strtolower($prompt);
         if (str_contains($lower, 'blog') || str_contains($lower, 'beitrag')) {
             return [
-                'summary' => 'Neuer Blogbeitrag als Entwurf in der Dev-Umgebung.',
+                'summary' => 'Neuer Blogbeitrag in der Dev-Umgebung.',
                 'ops' => [[
                     'op' => 'create_post',
                     'type' => 'post',
-                    'status' => 'draft',
+                    'status' => 'publish',
                     'title' => Str::limit($prompt, 80, ''),
                     'content' => '<p>'.e($prompt).'</p>',
                 ]],
@@ -316,9 +345,9 @@ class ContentStudioService
                 'ops' => [[
                     'op' => 'create_post',
                     'type' => 'page',
-                    'status' => 'draft',
+                    'status' => 'publish',
                     'title' => Str::limit($prompt, 80, ''),
-                    'content' => '<h1>'.e(Str::limit($prompt, 60, '')).'</h1><p>Entwurf – bitte in der Dev-Umgebung prüfen.</p>',
+                    'content' => '<h1>'.e(Str::limit($prompt, 60, '')).'</h1><p>In der isolierten Dev-Umgebung angelegt – bitte prüfen.</p>',
                 ]],
             ];
         }
@@ -352,7 +381,7 @@ class ContentStudioService
                     'title' => mb_substr(trim((string) ($op['title'] ?? '')), 0, 200),
                     'content' => (string) ($op['content'] ?? ''),
                     'excerpt' => mb_substr((string) ($op['excerpt'] ?? ''), 0, 500),
-                    'status' => in_array($op['status'] ?? 'draft', ['publish', 'draft', 'private'], true) ? ($op['status'] ?? 'draft') : 'draft',
+                    'status' => in_array($op['status'] ?? 'publish', ['publish', 'draft', 'private'], true) ? ($op['status'] ?? 'publish') : 'publish',
                     'parent' => (int) ($op['parent'] ?? 0),
                 ],
                 'update_post' => [
@@ -398,5 +427,77 @@ class ContentStudioService
         }
 
         return array_slice($clean, 0, 20);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $results
+     * @return list<array<string, mixed>>
+     */
+    public function publicizeResults(Site $site, array $results): array
+    {
+        $out = [];
+        foreach ($results as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            if (! empty($row['url'])) {
+                $row['url'] = $this->publicizeUrl($site, (string) $row['url']);
+            }
+            $out[] = $row;
+        }
+
+        return $out;
+    }
+
+    public function publicizeUrl(Site $site, string $url): string
+    {
+        $clone = rtrim((string) ($site->dev_clone['url'] ?? ''), '/');
+        if ($clone === '' || $url === '') {
+            return $url;
+        }
+        $path = parse_url($url, PHP_URL_PATH);
+        if (! is_string($path) || $path === '') {
+            $path = '/';
+        }
+        $query = parse_url($url, PHP_URL_QUERY);
+        $clonePath = parse_url($clone, PHP_URL_PATH);
+        $clonePath = is_string($clonePath) ? rtrim($clonePath, '/') : '';
+        if ($clonePath !== '' && str_starts_with($path, $clonePath)) {
+            $path = substr($path, strlen($clonePath)) ?: '/';
+        }
+
+        return $clone.$path.($query ? '?'.$query : '');
+    }
+
+    /**
+     * @param  array<string, mixed>  $draft
+     */
+    private function rememberHistory(Site $site, array $draft): void
+    {
+        $history = $site->content_studio['history'] ?? [];
+        if (! is_array($history)) {
+            $history = [];
+        }
+        array_unshift($history, [
+            'prompt' => $draft['prompt'] ?? '',
+            'summary' => $draft['summary'] ?? '',
+            'status' => $draft['status'] ?? '',
+            'dev_results' => $draft['dev_results'] ?? [],
+            'error' => $draft['error'] ?? null,
+            'at' => $draft['applied_dev_at'] ?? now()->toIso8601String(),
+        ]);
+        $this->patchStudio($site, ['history' => array_slice($history, 0, 10)]);
+    }
+
+    /** @param  list<array<string, mixed>>  $results */
+    private function firstResultError(array $results): ?string
+    {
+        foreach ($results as $row) {
+            if (empty($row['ok']) && ! empty($row['error'])) {
+                return (string) $row['error'];
+            }
+        }
+
+        return null;
     }
 }

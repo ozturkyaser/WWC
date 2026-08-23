@@ -15,6 +15,7 @@ const TOOLS = [
   { name: "wwc_site_scan", description: "Scannt Theme, Plugins, Editoren und Seiten in der isolierten Dev-Umgebung.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
   { name: "wwc_content_plan", description: "Erzeugt einen Änderungsplan aus einer Anweisung.", inputSchema: { type: "object", required: ["prompt"], properties: { site_id: { type: "string" }, prompt: { type: "string" } } } },
   { name: "wwc_apply_dev", description: "Wendet den Plan nur in der isolierten Dev-Umgebung an.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
+  { name: "wwc_run_dev", description: "Plant den Auftrag und setzt ihn sofort in der isolierten Dev-Umgebung um.", inputSchema: { type: "object", required: ["prompt"], properties: { site_id: { type: "string" }, prompt: { type: "string" } } } },
   { name: "wwc_promote_live", description: "Übernimmt den in Dev geprüften Plan auf Live.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
 ];
 
@@ -40,7 +41,7 @@ async function handleTool(name, args = {}) {
   if (!siteId) {
     throw new Error("site_id fehlt (Argument oder WWC_SITE_ID).");
   }
-  if (name === "wwc_content_plan") {
+  if (name === "wwc_content_plan" || name === "wwc_run_dev") {
     return callApi("/mcp/call", { tool: name, site_id: siteId, arguments: { prompt: args.prompt } });
   }
   return callApi("/mcp/call", { tool: name, site_id: siteId, arguments: args });

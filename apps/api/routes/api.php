@@ -105,6 +105,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
     Route::get('/sites/{id}/content-studio', [\App\Http\Controllers\Api\ContentStudioController::class, 'show']);
     Route::post('/sites/{id}/content-studio/scan', [\App\Http\Controllers\Api\ContentStudioController::class, 'scan']);
+    Route::post('/sites/{id}/content-studio/run', [\App\Http\Controllers\Api\ContentStudioController::class, 'run']);
     Route::post('/sites/{id}/content-studio/plan', [\App\Http\Controllers\Api\ContentStudioController::class, 'plan']);
     Route::post('/sites/{id}/content-studio/apply-dev', [\App\Http\Controllers\Api\ContentStudioController::class, 'applyDev']);
     Route::post('/sites/{id}/content-studio/promote', [\App\Http\Controllers\Api\ContentStudioController::class, 'promote']);

@@ -65,6 +65,46 @@ class ContentStudioTest extends TestCase
         $this->assertSame('planned', $res->json('data.draft.status'));
         $this->assertSame('create_post', $res->json('data.draft.ops.0.op'));
         $this->assertSame('page', $res->json('data.draft.ops.0.type'));
+        $this->assertSame('publish', $res->json('data.draft.ops.0.status'));
+    }
+
+    public function test_run_requires_clone(): void
+    {
+        $this->site->update([
+            'content_studio' => [
+                'intel' => [
+                    'ok' => true,
+                    'site' => ['name' => 'Cuno'],
+                    'pages' => [],
+                    'plugins' => [],
+                    'editors' => ['default' => 'gutenberg', 'builders' => []],
+                ],
+            ],
+        ]);
+
+        $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/run', [
+                'prompt' => 'Neue Landingpage für Winterreifen',
+            ])
+            ->assertStatus(422);
+    }
+
+    public function test_publicize_url_rewrites_live_permalink_to_clone(): void
+    {
+        $this->site->update([
+            'url' => 'https://cuno.example',
+            'dev_clone' => ['status' => 'ready', 'url' => 'https://wwc.kiservicehub.de/clone/9123'],
+        ]);
+
+        $svc = app(ContentStudioService::class);
+        $this->assertSame(
+            'https://wwc.kiservicehub.de/clone/9123/winterreifen/',
+            $svc->publicizeUrl($this->site, 'https://cuno.example/winterreifen/')
+        );
+        $this->assertSame(
+            'https://wwc.kiservicehub.de/clone/9123/winterreifen/',
+            $svc->publicizeUrl($this->site, 'https://wwc.kiservicehub.de/clone/9123/winterreifen/')
+        );
     }
 
     public function test_apply_dev_requires_clone(): void

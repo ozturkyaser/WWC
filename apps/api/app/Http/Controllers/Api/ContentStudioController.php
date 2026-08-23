@@ -30,6 +30,22 @@ class ContentStudioController extends Controller
         return response()->json(['data' => $data]);
     }
 
+    public function run(Request $request, string $id, ContentStudioService $studio)
+    {
+        $site = $this->site($request, $id);
+        $data = $request->validate(['prompt' => 'required|string|max:4000']);
+        try {
+            $payload = $studio->runOnDev($site, $data['prompt']);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        AuditLogger::log('site.content.run_dev', $request->attributes->get('organization_id'), $request->user(), $site->id, [
+            'prompt' => mb_substr($data['prompt'], 0, 200),
+        ], $request);
+
+        return response()->json(['data' => $payload]);
+    }
+
     public function plan(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);

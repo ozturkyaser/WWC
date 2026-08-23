@@ -33,6 +33,11 @@ class McpController extends Controller
                     'input' => ['site_id' => 'uuid'],
                 ],
                 [
+                    'name' => 'wwc_run_dev',
+                    'description' => 'Plant den Auftrag und setzt ihn sofort in der isolierten Dev-Umgebung um. Liefert Ergebnis-URLs.',
+                    'input' => ['site_id' => 'uuid', 'prompt' => 'string'],
+                ],
+                [
                     'name' => 'wwc_promote_live',
                     'description' => 'Übernimmt den in Dev geprüften Plan auf die Live-Site.',
                     'input' => ['site_id' => 'uuid'],
@@ -44,7 +49,7 @@ class McpController extends Controller
     public function call(Request $request, ContentStudioService $studio)
     {
         $data = $request->validate([
-            'tool' => 'required|string|in:wwc_site_scan,wwc_content_plan,wwc_apply_dev,wwc_promote_live',
+            'tool' => 'required|string|in:wwc_site_scan,wwc_content_plan,wwc_apply_dev,wwc_run_dev,wwc_promote_live',
             'site_id' => 'required|uuid',
             'arguments' => 'nullable|array',
         ]);
@@ -57,6 +62,7 @@ class McpController extends Controller
                 'wwc_site_scan' => $studio->scan($site),
                 'wwc_content_plan' => $studio->plan($site, (string) ($args['prompt'] ?? $request->input('prompt', ''))),
                 'wwc_apply_dev' => $studio->applyDev($site),
+                'wwc_run_dev' => $studio->runOnDev($site, (string) ($args['prompt'] ?? $request->input('prompt', ''))),
                 'wwc_promote_live' => $studio->promoteLive($site),
             };
         } catch (\RuntimeException $e) {
