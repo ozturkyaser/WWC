@@ -235,9 +235,68 @@ class DevCloneService
             'health_error' => $healthError,
             'ok' => $siteOk && collect($results)->every(fn ($r) => $r['ok']),
         ];
+
+        try {
+            $this->prepareLogsAfterUpdates($dir, $project);
+            $logs = $this->collectRuntimeLogs($site);
+            $review = app(CloneLogReviewService::class)->reviewAndNotify($site->fresh() ?? $site, $report, $logs);
+            $report['ai_review'] = $review;
+            $report['ok'] = $report['ok'] && ($review['ok'] ?? false);
+        } catch (\Throwable $e) {
+            Log::warning('Clone log review failed', ['site' => $site->id, 'error' => $e->getMessage()]);
+            $report['ai_review'] = [
+                'ok' => $report['ok'],
+                'summary' => 'Log-Prüfung nicht möglich: '.mb_substr($e->getMessage(), 0, 200),
+                'findings' => [],
+                'source' => 'error',
+            ];
+        }
+
         $this->setState($site, ['last_dry_run' => $report, 'status' => 'ready']);
 
         return $report;
+    }
+
+    private function prepareLogsAfterUpdates(string $dir, string $project): void
+    {
+        $this->wp($dir, $project, ['config', 'set', 'WP_DEBUG', 'true', '--raw'], true);
+        $this->wp($dir, $project, ['config', 'set', 'WP_DEBUG_LOG', 'true', '--raw'], true);
+        $this->wp($dir, $project, ['config', 'set', 'WP_DEBUG_DISPLAY', 'false', '--raw'], true);
+
+        foreach (['http://localhost/', 'http://localhost/wp-login.php'] as $url) {
+            $this->docker($dir, ['compose', '-p', $project, 'exec', '-T', 'wp', 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', $url], 30, true);
+        }
+    }
+
+    public function collectRuntimeLogs(Site $site): string
+    {
+        $dir = $this->cloneDir($site);
+        $project = $this->projectName($site);
+        $chunks = [];
+
+        foreach (['wp', 'db'] as $svc) {
+            $out = $this->docker($dir, ['compose', '-p', $project, 'logs', '--no-color', '--tail=120', $svc], 45, true);
+            if (trim($out) !== '') {
+                $chunks[] = "=== docker {$svc} ===\n".mb_substr($out, -8000);
+            }
+        }
+
+        $apache = $this->docker(
+            $dir,
+            ['compose', '-p', $project, 'exec', '-T', 'wp', 'sh', '-c', 'tail -n 80 /var/log/apache2/error.log 2>/dev/null || true'],
+            30,
+            true
+        );
+        if (trim($apache) !== '') {
+            $chunks[] = "=== apache error.log ===\n".mb_substr($apache, -4000);
+        }
+
+        $debug = $dir.'/html/wp-content/debug.log';
+        if (is_file($debug)) {
+            $chunks[] = "=== wp-content/debug.log ===\n".mb_substr((string) file_get_contents($debug), -12000);
+        }
+
+        return implode("\n\n", $chunks);
     }
 
     public function destroy(Site $site): void
@@ -445,7 +504,9 @@ define('WP_SITEURL', '{$cloneUrl}');
 define('WP_ENVIRONMENT_TYPE', 'staging');
 define('AUTOMATIC_UPDATER_DISABLED', true);
 define('DISALLOW_FILE_EDIT', true);
-define('WP_DEBUG', false);
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', false);
 
 if (! defined('ABSPATH')) {
     define('ABSPATH', __DIR__ . '/');

@@ -57,6 +57,12 @@ type DevClone = {
     site_ok?: boolean;
     health_error?: string | null;
     items?: Array<{ type: string; slug: string; ok: boolean; error?: string | null }>;
+    ai_review?: {
+      ok?: boolean;
+      summary?: string;
+      findings?: string[];
+      source?: string;
+    } | null;
   } | null;
 };
 
@@ -626,7 +632,7 @@ export default function SiteDetailPage() {
         body: JSON.stringify({ items }),
       });
       setMsgTone("info");
-      setMsg("Dry-Run läuft in der WWC-Kopie – Ergebnis erscheint im Tab Development.");
+      setMsg("Dry-Run läuft in der isolierten Umgebung. Danach prüft die KI die Logs und gibt Bescheid, wenn keine Fehler da sind.");
       setSelectedUpdates(new Set());
       await load();
     } catch (e) {
@@ -1856,9 +1862,24 @@ export default function SiteDetailPage() {
               {devClone.last_dry_run.health_error && (
                 <div className="error" style={{ marginTop: 6 }}>{devClone.last_dry_run.health_error}</div>
               )}
+              {devClone.last_dry_run.ai_review?.summary && (
+                <p style={{ margin: "8px 0 0", fontSize: "0.85rem" }}>
+                  <strong>KI-Prüfung</strong>{" "}
+                  {devClone.last_dry_run.ai_review.ok ? (
+                    <span className="badge completed">Logs ohne Fehler</span>
+                  ) : (
+                    <span className="badge failed">Logs prüfen</span>
+                  )}
+                  <br />
+                  {devClone.last_dry_run.ai_review.summary}
+                </p>
+              )}
+              {(devClone.last_dry_run.ai_review?.findings || []).map((f) => (
+                <div key={f} className="cell-sub" style={{ fontSize: "0.82rem" }}>• {f}</div>
+              ))}
               {!devClone.last_dry_run.running && devClone.last_dry_run.ok && (
                 <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
-                  Kopie läuft nach den Updates stabil – die Updates können live ausgeführt werden.
+                  Isolierte Umgebung und Logs sind sauber – die Updates können live ausgeführt werden.
                 </p>
               )}
             </div>
