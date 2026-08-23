@@ -321,6 +321,10 @@ final class WWC_Agent_Staging
         $base = '/'.trim((string) $base, '/').'/';
 
         return "# WWC Staging\nOptions -Indexes\n"
+            ."<IfModule mod_headers.c>\n"
+            ."Header always unset X-Frame-Options\n"
+            ."Header always set Content-Security-Policy \"frame-ancestors *\"\n"
+            ."</IfModule>\n"
             // Never serve staging metadata files (defense in depth; secrets live in WP options)
             ."<FilesMatch \"^wwc-staging.*\\.json$\">\n"
             ."<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n"

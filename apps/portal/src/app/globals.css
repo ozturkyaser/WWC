@@ -533,20 +533,12 @@ select, input[type="text"], input[type="email"], input[type="url"], input[type="
   margin-bottom: 12px;
   font-size: 0.9rem;
 }
-.dev-frame-wrap {
-  flex: 1;
-  min-height: 70vh;
+.dev-launch {
+  max-width: 720px;
+  padding: 20px 22px;
   border: 1px solid var(--line);
-  border-radius: 10px 10px 0 0;
-  overflow: hidden;
-  background: #111;
-}
-.dev-frame {
-  width: 100%;
-  height: calc(100vh - 180px);
-  min-height: 60vh;
-  border: 0;
-  background: #fff;
+  border-radius: 10px;
+  background: rgba(23, 30, 38, 0.9);
 }
 .dev-fallback {
   padding: 48px 24px;
