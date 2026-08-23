@@ -8,6 +8,7 @@ import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProcessBar, ProcessList } from "@/components/ProcessBar";
 import { Flash, PageHeader, Tabs } from "@/components/ui";
 import { api, downloadSiteBackup } from "@/lib/api";
+import { publicPortalHref } from "@/lib/staging";
 
 type Backup = {
   id: string;
@@ -584,6 +585,7 @@ export default function SiteDetailPage() {
   const stagingPreview = stagingPortal?.preview_url || staging?.url || (site.url ? `${site.url.replace(/\/$/, "")}/wp-content/wwc-staging/` : null);
   const stagingAdmin = stagingPortal?.admin_login_url
     || (stagingPreview ? `${stagingPreview.replace(/\/$/, "")}/wp-admin/` : null);
+  const portalHref = publicPortalHref(stagingPortal?.portal_url);
   const updates =
     (site.inventory?.core?.update_available ? 1 : 0) +
     plugins.filter((p) => p.update_available).length +
@@ -1799,10 +1801,10 @@ export default function SiteDetailPage() {
           {stagingReady ? (
             <>
               <div className="meta-row" style={{ marginBottom: 16 }}>
-                {stagingPortal?.portal_url && (
+                {portalHref && (
                   <span className="meta-chip">
                     Portal:{" "}
-                    <a href={stagingPortal.portal_url} target="_blank" rel="noreferrer">{stagingPortal.portal_url}</a>
+                    <a href={portalHref} target="_blank" rel="noreferrer">{portalHref}</a>
                   </span>
                 )}
                 {stagingPreview && (
@@ -1829,8 +1831,8 @@ export default function SiteDetailPage() {
                     Frontend prüfen
                   </a>
                 )}
-                {stagingPortal?.portal_url && (
-                  <a className="btn secondary" href={stagingPortal.portal_url} target="_blank" rel="noreferrer">
+                {portalHref && (
+                  <a className="btn secondary" href={portalHref} target="_blank" rel="noreferrer">
                     Portal-Ansicht
                   </a>
                 )}

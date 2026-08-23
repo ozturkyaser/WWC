@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { publicPortalHref } from "@/lib/staging";
 import { InstallWizard, InstallInfo } from "@/components/InstallWizard";
 import { ProcessBar } from "@/components/ProcessBar";
 
@@ -352,10 +353,10 @@ export function ProjectOnboardingWizard({
             {onboarding?.status === "done" && (
               <p style={{ color: "var(--ok)" }}>
                 Fertig.
-                {onboarding.staging_portal?.portal_url && (
+                {publicPortalHref(onboarding.staging_portal?.portal_url) && (
                   <>
                     {" "}
-                    <a href={onboarding.staging_portal.portal_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent-2)" }}>
+                    <a href={publicPortalHref(onboarding.staging_portal?.portal_url) ?? "#"} target="_blank" rel="noreferrer" style={{ color: "var(--accent-2)" }}>
                       Dev-Portal öffnen
                     </a>
                   </>

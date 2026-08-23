@@ -131,20 +131,37 @@ class StagingPortalService
 
     public function portalUrlForSlug(string $slug): string
     {
-        $base = rtrim((string) config('wwc.portal_url', 'http://localhost:3000'), '/');
-        $parts = parse_url($base);
-        $scheme = $parts['scheme'] ?? 'http';
-        $host = $parts['host'] ?? 'localhost';
-        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
-        $suffix = (string) config('wwc.staging_subdomain_suffix', 'dev');
+        return rtrim($this->portalBase(), '/').'/dev/'.rawurlencode($slug);
+    }
 
-        // localhost / *.localhost: path-based URL so localStorage auth works
-        // (subdomains are a different browser origin from the portal).
-        if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
-            return sprintf('%s://%s%s/dev/%s', $scheme, $host, $port, $slug);
+    /**
+     * Public WWC portal origin. Never emit localhost on production – that is
+     * only valid for local APP_ENV + WWC_PORTAL_URL.
+     */
+    private function portalBase(): string
+    {
+        $configured = rtrim((string) config('wwc.portal_url', ''), '/');
+        $app = rtrim((string) config('app.url', ''), '/');
+        $public = 'https://wwc.kiservicehub.de';
+
+        if (app()->environment('local') && $this->isLoopbackUrl($configured)) {
+            return $configured !== '' ? $configured : 'http://localhost:3000';
         }
 
-        return sprintf('%s://%s.%s.%s%s', $scheme, $slug, $suffix, $host, $port);
+        foreach ([$configured, $app, $public] as $candidate) {
+            if ($candidate !== '' && ! $this->isLoopbackUrl($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $public;
+    }
+
+    private function isLoopbackUrl(string $url): bool
+    {
+        $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?: ''));
+
+        return $host === '' || $host === 'localhost' || $host === '127.0.0.1' || str_ends_with($host, '.localhost');
     }
 
     public function uniqueSlug(Site $site): string

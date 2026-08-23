@@ -1,3 +1,21 @@
+/** Rewrite API localhost portal links to the current WWC origin. */
+export function publicPortalHref(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (typeof window !== "undefined" && loopback && window.location.hostname !== "localhost") {
+      return `${window.location.origin}${parsed.pathname}${parsed.search}`;
+    }
+    if (loopback && typeof window === "undefined") {
+      return `https://wwc.kiservicehub.de${parsed.pathname}${parsed.search}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
 /** Build the portal URL for a staging slug (same origin as portal when possible). */
 export function stagingPortalUrl(slug: string | null | undefined): string | null {
   if (!slug) return null;
