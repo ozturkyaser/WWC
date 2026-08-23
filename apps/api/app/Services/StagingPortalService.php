@@ -11,11 +11,14 @@ class StagingPortalService
     public function syncFromStagingPayload(Site $site, ?array $staging, bool $destroyed = false): void
     {
         if ($destroyed || ! is_array($staging) || empty($staging['exists'])) {
+            $health = is_array($site->health) ? $site->health : [];
+            $health['staging'] = ['exists' => false];
             $site->forceFill([
                 'staging_url' => null,
                 'staging_admin_url' => null,
                 'staging_access_encrypted' => null,
                 'staging_ready_at' => null,
+                'health' => $health,
             ])->save();
 
             return;
@@ -35,10 +38,19 @@ class StagingPortalService
             $adminLogin = $access['admin_login_url'];
         }
 
+        $health = is_array($site->health) ? $site->health : [];
+        $safe = $this->stripSecretsFromHealth(['staging' => $staging]);
+        $health['staging'] = array_merge(
+            is_array($health['staging'] ?? null) ? $health['staging'] : [],
+            is_array($safe['staging'] ?? null) ? $safe['staging'] : [],
+            ['exists' => true, 'url' => $staging['url'] ?? $site->staging_url]
+        );
+
         $site->forceFill([
             'staging_url' => $staging['url'] ?? $site->staging_url,
             'staging_admin_url' => $adminLogin ?: ($staging['admin_url'] ?? $site->staging_admin_url),
             'staging_ready_at' => now(),
+            'health' => $health,
         ])->save();
     }
 

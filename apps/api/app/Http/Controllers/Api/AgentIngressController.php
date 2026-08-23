@@ -55,8 +55,16 @@ class AgentIngressController extends Controller
 
         $health = $data['health'] ?? null;
         if (is_array($health) && isset($health['staging'])) {
-            $stagingPortal->syncFromStagingPayload($site, $health['staging']);
+            // Only sync when the agent confirms staging exists. A mid-create
+            // heartbeat with exists=false must not wipe URLs after a successful job.
+            if (! empty($health['staging']['exists'])) {
+                $stagingPortal->syncFromStagingPayload($site, $health['staging']);
+            }
             $health = $stagingPortal->stripSecretsFromHealth($health);
+            if (empty($health['staging']['exists']) && $site->staging_ready_at && $site->staging_url) {
+                $health['staging']['exists'] = true;
+                $health['staging']['url'] = $health['staging']['url'] ?? $site->staging_url;
+            }
         }
 
         $wasOffline = $site->status === 'offline';

@@ -92,6 +92,7 @@ type Staging = {
 
 type StagingPortal = {
   exists: boolean;
+  ready_at?: string | null;
   portal_url?: string | null;
   preview_url?: string | null;
   admin_login_url?: string | null;
@@ -383,7 +384,7 @@ export default function SiteDetailPage() {
       setMsg("Bitte mindestens ein Update auswählen");
       return;
     }
-    if (mode === "staging" && !detail?.data?.health?.staging?.exists) {
+    if (mode === "staging" && !detail?.data?.health?.staging?.exists && !detail?.staging_portal?.exists) {
       setMsgTone("error");
       setMsg("Zuerst Development/Staging anlegen");
       return;
@@ -579,6 +580,8 @@ export default function SiteDetailPage() {
     return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   })();
   const staging = site.health?.staging;
+  const stagingReady = Boolean(staging?.exists || stagingPortal?.exists || stagingPortal?.ready_at);
+  const stagingPreview = stagingPortal?.preview_url || staging?.url || (site.url ? `${site.url.replace(/\/$/, "")}/wp-content/wwc-staging/` : null);
   const updates =
     (site.inventory?.core?.update_available ? 1 : 0) +
     plugins.filter((p) => p.update_available).length +
@@ -996,7 +999,7 @@ export default function SiteDetailPage() {
                 <div>SSL: {site.monitor?.ssl_days != null ? `${site.monitor.ssl_days} Tage` : "–"}</div>
                 <div>PHP: {site.monitor?.php?.version || site.php_version || "–"} {site.monitor?.php?.status && site.monitor.php.status !== "ok" ? `(${site.monitor.php.status})` : ""}</div>
                 <div>Freeze: {site.freeze_until ? `${new Date(site.freeze_until).toLocaleDateString("de-DE")} · ${site.freeze_reason || ""}` : "aus"}</div>
-                <div>Staging: {staging?.exists ? "aktiv" : "nicht angelegt"}</div>
+                <div>Staging: {stagingReady ? "aktiv" : "nicht angelegt"}</div>
                 <div>Backups: {backups.length}</div>
                 <div>Core: {site.inventory?.core?.version || "–"}
                   {site.inventory?.core?.update_available && (
@@ -1101,7 +1104,7 @@ export default function SiteDetailPage() {
               <div className="row" style={{ gap: 8 }}>
                 <button
                   className="btn secondary sm"
-                  disabled={busy || selectedUpdates.size === 0 || !staging?.exists}
+                  disabled={busy || selectedUpdates.size === 0 || !stagingReady}
                   type="button"
                   onClick={() => runSelected("staging")}
                 >
@@ -1200,7 +1203,7 @@ export default function SiteDetailPage() {
                                 {u.type !== "core" && (
                                   <button
                                     className="btn secondary sm"
-                                    disabled={busy || !staging?.exists}
+                                    disabled={busy || !stagingReady}
                                     type="button"
                                     onClick={() =>
                                       run(u.type === "theme" ? "staging_update_theme" : "staging_update_plugin", {
@@ -1290,7 +1293,7 @@ export default function SiteDetailPage() {
                       <td>
                         {p.update_available && (
                           <div className="action-menu">
-                            <button className="btn secondary sm" disabled={busy || !staging?.exists} type="button" onClick={() => run("staging_update_plugin", { slug: p.slug })}>
+                            <button className="btn secondary sm" disabled={busy || !stagingReady} type="button" onClick={() => run("staging_update_plugin", { slug: p.slug })}>
                               Dry-Run
                             </button>
                             <button className="btn secondary sm" disabled={busy} type="button" onClick={() => run("update_plugin", { slug: p.slug })}>
@@ -1334,7 +1337,7 @@ export default function SiteDetailPage() {
                       <td>
                         {t.update_available && (
                           <div className="action-menu">
-                            <button className="btn secondary sm" disabled={busy || !staging?.exists} type="button" onClick={() => run("staging_update_theme", { slug: t.slug })}>
+                            <button className="btn secondary sm" disabled={busy || !stagingReady} type="button" onClick={() => run("staging_update_theme", { slug: t.slug })}>
                               Dry-Run
                             </button>
                             <button className="btn secondary sm" disabled={busy} type="button" onClick={() => run("update_theme", { slug: t.slug })}>
@@ -1791,7 +1794,7 @@ export default function SiteDetailPage() {
           <p className="muted" style={{ marginTop: 0 }}>
             Isolierte Dev-Umgebung zum Testen. Promote übernimmt geprüfte Änderungen auf Live.
           </p>
-          {staging?.exists ? (
+          {stagingReady ? (
             <>
               <div className="meta-row" style={{ marginBottom: 16 }}>
                 {stagingPortal?.portal_url && (
@@ -1800,10 +1803,10 @@ export default function SiteDetailPage() {
                     <a href={stagingPortal.portal_url} target="_blank" rel="noreferrer">{stagingPortal.portal_url}</a>
                   </span>
                 )}
-                {stagingPortal?.preview_url && (
+                {stagingPreview && (
                   <span className="meta-chip">
                     Staging:{" "}
-                    <a href={stagingPortal.preview_url} target="_blank" rel="noreferrer">{stagingPortal.preview_url}</a>
+                    <a href={stagingPreview} target="_blank" rel="noreferrer">{stagingPreview}</a>
                   </span>
                 )}
                 {stagingPortal?.access && (
@@ -1819,8 +1822,8 @@ export default function SiteDetailPage() {
                     WP-Admin öffnen
                   </a>
                 )}
-                {stagingPortal?.preview_url && (
-                  <a className="btn secondary" href={stagingPortal.preview_url} target="_blank" rel="noreferrer">
+                {stagingPreview && (
+                  <a className="btn secondary" href={stagingPreview} target="_blank" rel="noreferrer">
                     Frontend prüfen
                   </a>
                 )}

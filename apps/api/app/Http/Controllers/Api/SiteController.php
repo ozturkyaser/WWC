@@ -95,6 +95,23 @@ class SiteController extends Controller
         $latestAgent = $packager->version();
         $currentAgent = (string) ($site->agent_version ?: '0.0.0');
 
+        if (! $site->staging_url) {
+            $createJob = $site->jobs()
+                ->where('command', 'staging_create')
+                ->where('status', 'completed')
+                ->latest()
+                ->first();
+            $payload = is_array($createJob?->result) ? $createJob->result : [];
+            $fromJob = is_array($payload['staging'] ?? null) ? $payload['staging'] : null;
+            if (is_array($fromJob) && ! empty($fromJob['exists'])) {
+                if (! empty($payload['access']) && is_array($payload['access'])) {
+                    $fromJob['access'] = $payload['access'];
+                }
+                $staging->syncFromStagingPayload($site, $fromJob);
+                $site = $site->fresh();
+            }
+        }
+
         $serverBackups = $site->serverBackups()
             ->orderByDesc('backup_created_at')
             ->limit(30)
