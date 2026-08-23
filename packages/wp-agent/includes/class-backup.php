@@ -839,6 +839,16 @@ final class WWC_Agent_Backup
         return str_ends_with($rel, '.log') || str_ends_with($rel, '.tmp');
     }
 
+    public static function skips_rel(string $rel): bool
+    {
+        return self::should_skip($rel);
+    }
+
+    public static function skips_table_data(string $table): bool
+    {
+        return self::skip_table_data($table);
+    }
+
     private static function zip_paths(string $zipFile, array $relativePaths, string $base, int $pctFrom = 50, int $pctTo = 86): array
     {
         @set_time_limit(900);

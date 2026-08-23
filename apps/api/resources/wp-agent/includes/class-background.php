@@ -227,7 +227,9 @@ final class WWC_Agent_Background
                 return;
             }
             $message = 'PHP-Abbruch: '.mb_substr((string) ($err['message'] ?? 'fatal'), 0, 220);
-            if (in_array($command, ['backup_full', 'backup_incremental'], true) && WWC_Agent_Backup::has_work($jobId)) {
+            $resumable = in_array($command, ['backup_full', 'backup_incremental'], true) && WWC_Agent_Backup::has_work($jobId);
+            $resumable = $resumable || ($command === 'staging_create' && WWC_Agent_Staging::has_work());
+            if ($resumable) {
                 self::enqueue($jobId, $command, $payload);
 
                 return;

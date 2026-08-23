@@ -17,7 +17,9 @@ final class WWC_Agent_Staging
     public static function status(): array
     {
         $path = self::path();
-        $exists = is_dir($path) && file_exists($path.'/wp-config.php');
+        $exists = is_dir($path)
+            && file_exists($path.'/wp-config.php')
+            && file_exists($path.'/wwc-staging-db.json');
         $metaFile = $path.'/wwc-staging.json';
         $meta = file_exists($metaFile) ? json_decode((string) file_get_contents($metaFile), true) : null;
 
@@ -52,102 +54,104 @@ final class WWC_Agent_Staging
 
     public static function create(bool $withBackup = true): array
     {
-        @set_time_limit(900);
+        @set_time_limit(0);
         @ini_set('memory_limit', '512M');
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true);
+        }
 
-        WWC_Agent_Job_Progress::report(2, 'Development-Umgebung starten…', true);
-        WWC_Agent_Job_Progress::log('Zielpfad: '.self::path());
-        $backup = null;
-
-        if ($withBackup) {
-            WWC_Agent_Job_Progress::report(4, 'Sicherheits-Backup vor Staging…', true);
-            WWC_Agent_Job_Progress::log('Backup-Phase (wird in den Fortschritt 5–40% eingeordnet)');
-            WWC_Agent_Job_Progress::pushScope(5, 40);
-            try {
-                $backup = WWC_Agent_Backup::create_full('pre-staging');
-            } finally {
-                WWC_Agent_Job_Progress::popScope();
-            }
-            if (! ($backup['ok'] ?? false)) {
-                return ['ok' => false, 'error' => 'Backup before staging failed', 'details' => $backup];
-            }
-            WWC_Agent_Job_Progress::log(
-                'Backup fertig: '.(($backup['backup']['id'] ?? '?')).' ('.(int) ($backup['backup']['file_count'] ?? 0).' Dateien)',
-                42,
+        $jobId = WWC_Agent_Job_Progress::currentJobId() ?: ('local-'.wp_generate_password(8, false, false));
+        $work = self::load_work();
+        if ($work === null) {
+            $work = self::start_work($jobId, $withBackup);
+            WWC_Agent_Job_Progress::report(2, 'Development-Umgebung starten…', true);
+            WWC_Agent_Job_Progress::log('Zielpfad: '.self::path());
+        } else {
+            $work['job_id'] = $jobId;
+            WWC_Agent_Job_Progress::report(
+                (int) ($work['percent'] ?? 8),
+                'Development fortsetzen ('.$work['phase'].')…',
                 true
             );
-        } else {
-            WWC_Agent_Job_Progress::log('Kein Vorab-Backup (with_backup=false)', 8, true);
         }
 
-        $dest = self::path();
-        if (is_dir($dest)) {
-            WWC_Agent_Job_Progress::report(43, 'Alte Staging-Umgebung entfernen…', true);
-            self::rrmdir($dest);
-            WWC_Agent_Job_Progress::log('Alten Staging-Ordner gelöscht');
-        }
-        wp_mkdir_p($dest);
+        $started = microtime(true);
+        $budget = 18;
 
-        WWC_Agent_Job_Progress::report(45, 'WordPress-Dateien kopieren…', true);
-        $copied = self::copy_tree(ABSPATH, $dest, [
-            'wp-content/wwc-backups',
-            'wp-content/wwc-staging',
-            '.git',
-            'node_modules',
-        ], 45, 70);
-        if (! $copied['ok']) {
-            return $copied;
-        }
-        WWC_Agent_Job_Progress::log(
-            'Kopiert: '.(int) ($copied['files'] ?? 0).' Dateien / '.(int) ($copied['dirs'] ?? 0).' Ordner',
-            71,
-            true
-        );
+        if (($work['phase'] ?? '') === 'backup') {
+            $latest = WWC_Agent_Backup::latest_full();
+            if (is_array($latest) && empty($latest['incomplete']) && ! empty($latest['id'])) {
+                $work['backup_id'] = (string) $latest['id'];
+                $work['phase'] = 'copy';
+                $work['percent'] = 42;
+                self::save_work($work);
+                WWC_Agent_Job_Progress::log('Vorhandenes Full-Backup genutzt: '.$work['backup_id'], 42, true);
+            } elseif (! empty($work['with_backup'])) {
+                WWC_Agent_Job_Progress::report(4, 'Sicherheits-Backup vor Staging…', true);
+                WWC_Agent_Job_Progress::pushScope(5, 40);
+                try {
+                    $backup = WWC_Agent_Backup::create_full('pre-staging');
+                } finally {
+                    WWC_Agent_Job_Progress::popScope();
+                }
+                if (! ($backup['ok'] ?? false)) {
+                    return ['ok' => false, 'error' => 'Backup before staging failed', 'details' => $backup];
+                }
+                if (! empty($backup['continue'])) {
+                    self::save_work($work);
 
-        WWC_Agent_Job_Progress::report(72, 'Staging konfigurieren…', true);
-        file_put_contents($dest.'/.htaccess', self::staging_htaccess());
-        file_put_contents($dest.'/wwc-staging.json', wp_json_encode([
-            'created_at' => gmdate('c'),
-            'source_url' => home_url('/'),
-            'staging_url' => self::url(),
-            'wp_version' => get_bloginfo('version'),
-            'mode' => 'dry-run',
-        ]));
-        WWC_Agent_Job_Progress::log('wwc-staging.json + .htaccess geschrieben');
-
-        $mu = $dest.'/wp-content/mu-plugins';
-        wp_mkdir_p($mu);
-        file_put_contents($mu.'/wwc-staging-guard.php', self::staging_guard_plugin_source());
-        WWC_Agent_Job_Progress::log('MU-Plugin Staging-Guard installiert');
-
-        $configPath = $dest.'/wp-config.php';
-        if (file_exists($configPath)) {
-            $prepend = "<?php\n".
-                "define('WWC_STAGING_ENV', true);\n".
-                "define('WP_HOME', '".addcslashes(self::url(), "\\'")."');\n".
-                "define('WP_SITEURL', '".addcslashes(self::url(), "\\'")."');\n".
-                // Full admin control for dry-run verification (not locked down like live hardening)
-                "if (! defined('DISALLOW_FILE_EDIT')) { define('DISALLOW_FILE_EDIT', false); }\n".
-                "if (! defined('DISALLOW_FILE_MODS')) { define('DISALLOW_FILE_MODS', false); }\n".
-                "if (! defined('AUTOMATIC_UPDATER_DISABLED')) { define('AUTOMATIC_UPDATER_DISABLED', true); }\n";
-            $original = file_get_contents($configPath);
-            if (is_string($original) && ! str_contains($original, 'WWC_STAGING_ENV')) {
-                $original = preg_replace('/^<\?php\s*/', $prepend, $original, 1) ?: ($prepend.$original);
-                file_put_contents($configPath, $original);
-                WWC_Agent_Job_Progress::log('wp-config.php für Staging-URLs angepasst', 76);
+                    return ['ok' => true, 'continue' => true, 'phase' => 'backup'];
+                }
+                $work['backup_id'] = (string) ($backup['backup']['id'] ?? '');
+                $work['phase'] = 'copy';
+                $work['percent'] = 42;
+                self::save_work($work);
+                WWC_Agent_Job_Progress::log('Backup fertig: '.($work['backup_id'] !== '' ? $work['backup_id'] : '?'), 42, true);
+            } else {
+                $work['phase'] = 'copy';
+                $work['percent'] = 42;
+                self::save_work($work);
+            }
+            if (self::slice_exhausted($started, $budget)) {
+                return ['ok' => true, 'continue' => true, 'phase' => 'copy'];
             }
         }
 
-        WWC_Agent_Job_Progress::report(78, 'Datenbank isolieren…', true);
-        $isolated = self::isolate_database($dest);
-        if (! ($isolated['ok'] ?? false)) {
-            return ['ok' => false, 'error' => 'Staging files copied but DB isolation failed', 'details' => $isolated, 'url' => self::url()];
+        if (($work['phase'] ?? '') === 'copy') {
+            $step = self::copy_tree_slice($work, $started, $budget);
+            self::save_work($work);
+            if (! ($step['ok'] ?? false)) {
+                return $step;
+            }
+            if (($work['phase'] ?? '') === 'copy') {
+                return ['ok' => true, 'continue' => true, 'phase' => 'copy'];
+            }
         }
-        WWC_Agent_Job_Progress::log(
-            'DB-Prefix '.$isolated['staging_prefix'].' · '.(int) ($isolated['tables'] ?? 0).' Tabellen',
-            90,
-            true
-        );
+
+        if (($work['phase'] ?? '') === 'configure') {
+            $configured = self::configure_staging();
+            if (! ($configured['ok'] ?? false)) {
+                return $configured;
+            }
+            $work['phase'] = 'db';
+            $work['percent'] = 78;
+            $work['db_table_i'] = 0;
+            self::save_work($work);
+            if (self::slice_exhausted($started, $budget)) {
+                return ['ok' => true, 'continue' => true, 'phase' => 'db'];
+            }
+        }
+
+        if (($work['phase'] ?? '') === 'db') {
+            $isolated = self::isolate_database_slice($work, $started, $budget);
+            self::save_work($work);
+            if (! ($isolated['ok'] ?? false)) {
+                return ['ok' => false, 'error' => 'Staging files copied but DB isolation failed', 'details' => $isolated, 'url' => self::url()];
+            }
+            if (($work['phase'] ?? '') === 'db') {
+                return ['ok' => true, 'continue' => true, 'phase' => 'db'];
+            }
+        }
 
         WWC_Agent_Job_Progress::report(92, 'Admin-Zugang einrichten…', true);
         $access = self::grant_admin_access();
@@ -156,15 +160,23 @@ final class WWC_Agent_Staging
             'url' => self::url(),
             'admin_user' => $access['username'] ?? null,
         ]);
+        self::clear_work();
         WWC_Agent_Job_Progress::report(98, 'Development bereit', true);
 
         return [
             'ok' => true,
             'staging' => self::status(),
             'access' => $access,
-            'backup_id' => $backup['backup']['id'] ?? null,
+            'backup_id' => $work['backup_id'] ?? null,
             'message' => 'Staging ready – portal subdomain + admin access available after sync',
         ];
+    }
+
+    public static function has_work(): bool
+    {
+        $work = self::load_work();
+
+        return is_array($work) && in_array((string) ($work['phase'] ?? ''), ['backup', 'copy', 'configure', 'db', 'finish'], true);
     }
 
     public static function grant_admin_access(): array
@@ -427,6 +439,7 @@ PHP;
             self::rrmdir($path);
         }
         delete_option('wwc_agent_staging_access');
+        self::clear_work();
         WWC_Agent_Event_Queue::push('staging_removed', 'Staging environment removed', 'info');
 
         return ['ok' => true];
@@ -607,9 +620,14 @@ PHP;
         return ['ok' => true, 'message' => 'Theme updated in staging (dry-run)', 'slug' => $slug];
     }
 
-    private static function isolate_database(string $stagingPath): array
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string,continue?:bool}
+     */
+    private static function isolate_database_slice(array &$work, float $started, int $budget): array
     {
         global $wpdb;
+        $stagingPath = self::path();
         $prefix = $wpdb->prefix;
         $stagePrefix = 'wwcstg_';
         $tables = $wpdb->get_col('SHOW TABLES');
@@ -619,22 +637,37 @@ PHP;
 
         $candidates = [];
         foreach ($tables as $table) {
-            if (str_starts_with($table, $prefix)) {
+            $table = (string) $table;
+            if (str_starts_with($table, $prefix) && ! str_starts_with($table, $stagePrefix)) {
                 $candidates[] = $table;
             }
         }
         $total = max(1, count($candidates));
-        $done = 0;
-        foreach ($candidates as $table) {
-            $done++;
+        $i = (int) ($work['db_table_i'] ?? 0);
+        while ($i < count($candidates) && ! self::slice_exhausted($started, $budget)) {
+            $table = $candidates[$i];
             $new = $stagePrefix.substr($table, strlen($prefix));
             $wpdb->query("DROP TABLE IF EXISTS `{$new}`");
             $wpdb->query("CREATE TABLE `{$new}` LIKE `{$table}`");
-            $wpdb->query("INSERT INTO `{$new}` SELECT * FROM `{$table}`");
-            if ($done === 1 || $done % 3 === 0 || $done === $total) {
-                $pct = 78 + (int) round(($done / $total) * 10);
-                WWC_Agent_Job_Progress::report($pct, 'DB '.$done.'/'.$total.': '.$table.' → '.$new);
+            if (WWC_Agent_Backup::skips_table_data($table)) {
+                WWC_Agent_Job_Progress::report(
+                    78 + (int) round((($i + 1) / $total) * 10),
+                    'DB '.($i + 1).'/'.$total.': '.$table.' übersprungen (Cache)'
+                );
+            } else {
+                $wpdb->query("INSERT INTO `{$new}` SELECT * FROM `{$table}`");
+                WWC_Agent_Job_Progress::report(
+                    78 + (int) round((($i + 1) / $total) * 10),
+                    'DB '.($i + 1).'/'.$total.': '.$table.' → '.$new
+                );
             }
+            $i++;
+            $work['db_table_i'] = $i;
+            $work['percent'] = 78 + (int) round(($i / $total) * 10);
+        }
+
+        if ($i < count($candidates)) {
+            return ['ok' => true, 'continue' => true];
         }
 
         $home = self::url();
@@ -659,6 +692,10 @@ PHP;
             'live_prefix' => $prefix,
             'staging_prefix' => $stagePrefix,
         ]));
+
+        $work['phase'] = 'finish';
+        $work['percent'] = 90;
+        WWC_Agent_Job_Progress::log('DB-Prefix '.$stagePrefix.' · '.count($candidates).' Tabellen', 90, true);
 
         return ['ok' => true, 'staging_prefix' => $stagePrefix, 'tables' => count($candidates)];
     }
@@ -713,7 +750,209 @@ PHP;
         }
     }
 
-    private static function copy_tree(string $src, string $dst, array $skipContains = [], int $pctFrom = 45, int $pctTo = 70): array
+    /**
+     * @return array<string, mixed>
+     */
+    private static function start_work(string $jobId, bool $withBackup): array
+    {
+        $dest = self::path();
+        if (is_dir($dest) && ! is_file($dest.'/wp-config.php')) {
+            self::rrmdir($dest);
+        }
+        if (! is_dir($dest)) {
+            wp_mkdir_p($dest);
+        }
+        $work = [
+            'job_id' => $jobId,
+            'phase' => 'backup',
+            'with_backup' => $withBackup,
+            'percent' => 4,
+            'copy_last' => '',
+            'copy_files' => 0,
+            'copy_dirs' => 0,
+            'db_table_i' => 0,
+        ];
+        self::save_work($work);
+
+        return $work;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function load_work(): ?array
+    {
+        $file = self::work_file();
+        if (! is_file($file)) {
+            return null;
+        }
+        $json = json_decode((string) file_get_contents($file), true);
+
+        return is_array($json) ? $json : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     */
+    private static function save_work(array $work): void
+    {
+        wp_mkdir_p(dirname(self::work_file()));
+        file_put_contents(self::work_file(), wp_json_encode($work));
+    }
+
+    private static function clear_work(): void
+    {
+        if (is_file(self::work_file())) {
+            @unlink(self::work_file());
+        }
+    }
+
+    private static function work_file(): string
+    {
+        return trailingslashit(WP_CONTENT_DIR).'wwc-backups/staging-work.json';
+    }
+
+    private static function slice_exhausted(float $started, int $budget): bool
+    {
+        $fromRequest = isset($_SERVER['REQUEST_TIME_FLOAT'])
+            ? microtime(true) - (float) $_SERVER['REQUEST_TIME_FLOAT']
+            : (microtime(true) - $started);
+
+        return $fromRequest >= $budget || (microtime(true) - $started) >= $budget;
+    }
+
+    /**
+     * @return array{ok:bool,error?:string}
+     */
+    private static function configure_staging(): array
+    {
+        $dest = self::path();
+        WWC_Agent_Job_Progress::report(72, 'Staging konfigurieren…', true);
+        file_put_contents($dest.'/.htaccess', self::staging_htaccess());
+        file_put_contents($dest.'/wwc-staging.json', wp_json_encode([
+            'created_at' => gmdate('c'),
+            'source_url' => home_url('/'),
+            'staging_url' => self::url(),
+            'wp_version' => get_bloginfo('version'),
+            'mode' => 'dry-run',
+        ]));
+        WWC_Agent_Job_Progress::log('wwc-staging.json + .htaccess geschrieben');
+
+        $mu = $dest.'/wp-content/mu-plugins';
+        wp_mkdir_p($mu);
+        file_put_contents($mu.'/wwc-staging-guard.php', self::staging_guard_plugin_source());
+        WWC_Agent_Job_Progress::log('MU-Plugin Staging-Guard installiert');
+
+        $configPath = $dest.'/wp-config.php';
+        if (file_exists($configPath)) {
+            $prepend = "<?php\n".
+                "define('WWC_STAGING_ENV', true);\n".
+                "define('WP_HOME', '".addcslashes(self::url(), "\\'")."');\n".
+                "define('WP_SITEURL', '".addcslashes(self::url(), "\\'")."');\n".
+                "if (! defined('DISALLOW_FILE_EDIT')) { define('DISALLOW_FILE_EDIT', false); }\n".
+                "if (! defined('DISALLOW_FILE_MODS')) { define('DISALLOW_FILE_MODS', false); }\n".
+                "if (! defined('AUTOMATIC_UPDATER_DISABLED')) { define('AUTOMATIC_UPDATER_DISABLED', true); }\n";
+            $original = file_get_contents($configPath);
+            if (is_string($original) && ! str_contains($original, 'WWC_STAGING_ENV')) {
+                $original = preg_replace('/^<\?php\s*/', $prepend, $original, 1) ?: ($prepend.$original);
+                file_put_contents($configPath, $original);
+                WWC_Agent_Job_Progress::log('wp-config.php für Staging-URLs angepasst', 76);
+            }
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string}
+     */
+    private static function copy_tree_slice(array &$work, float $started, int $budget): array
+    {
+        $src = rtrim(ABSPATH, '/\\');
+        $dst = rtrim(self::path(), '/\\');
+        if (! is_dir($src)) {
+            return ['ok' => false, 'error' => 'Source missing'];
+        }
+        wp_mkdir_p($dst);
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($src, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        $files = (int) ($work['copy_files'] ?? 0);
+        $dirs = (int) ($work['copy_dirs'] ?? 0);
+        $resumeAfter = (string) ($work['copy_last'] ?? '');
+        $skipping = $resumeAfter !== '';
+        $lastReport = $files;
+
+        foreach ($iterator as $item) {
+            if (self::slice_exhausted($started, $budget)) {
+                $work['copy_files'] = $files;
+                $work['copy_dirs'] = $dirs;
+                $work['percent'] = min(69, 45 + (int) floor($files / 800));
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Kopiere… '.$files.' Dateien', true);
+
+                return ['ok' => true];
+            }
+            $absolute = $item->getPathname();
+            $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen($src))), '/');
+            if (WWC_Agent_Backup::skips_rel($rel)) {
+                continue;
+            }
+            if ($skipping) {
+                if ($rel === $resumeAfter) {
+                    $skipping = false;
+                }
+                continue;
+            }
+            $target = $dst.'/'.$rel;
+            if ($item->isDir()) {
+                wp_mkdir_p($target);
+                $dirs++;
+            } else {
+                if (is_file($target) && (int) filesize($target) === (int) $item->getSize()) {
+                    $files++;
+                    $work['copy_last'] = $rel;
+                    continue;
+                }
+                wp_mkdir_p(dirname($target));
+                if (! @copy($absolute, $target)) {
+                    return ['ok' => false, 'error' => 'Copy failed: '.$rel];
+                }
+                $files++;
+            }
+            $work['copy_last'] = $rel;
+            $work['copy_files'] = $files;
+            $work['copy_dirs'] = $dirs;
+            if ($files - $lastReport >= 200) {
+                $work['percent'] = min(69, 45 + (int) floor($files / 800));
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Kopiere… '.$files.' Dateien · '.$rel, true);
+                $lastReport = $files;
+            }
+        }
+
+        if ($skipping) {
+            $work['copy_last'] = '';
+            $work['copy_files'] = $files;
+            $work['copy_dirs'] = $dirs;
+
+            return ['ok' => true];
+        }
+
+        $work['copy_files'] = $files;
+        $work['copy_dirs'] = $dirs;
+        $work['phase'] = 'configure';
+        $work['percent'] = 71;
+        WWC_Agent_Job_Progress::log('Kopiert: '.$files.' Dateien / '.$dirs.' Ordner', 71, true);
+
+        return ['ok' => true];
+    }
+
+    /**
+     * @param  list<string>  $skipContains
+     * @return array{ok:bool,error?:string,files?:int,dirs?:int}
+     */
+    private static function copy_tree(string $src, string $dst, array $skipContains = []): array
     {
         $src = rtrim($src, '/\\');
         $dst = rtrim($dst, '/\\');
@@ -727,14 +966,12 @@ PHP;
         );
         $files = 0;
         $dirs = 0;
-        $lastBucket = -1;
-        $tick = 0;
         foreach ($iterator as $item) {
             $absolute = $item->getPathname();
             $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen($src))), '/');
             $skip = false;
             foreach ($skipContains as $needle) {
-                if ($rel === $needle || str_starts_with($rel, rtrim($needle, '/').'/') || str_contains($rel, $needle)) {
+                if ($rel === $needle || str_contains($rel, $needle)) {
                     $skip = true;
                     break;
                 }
@@ -752,14 +989,6 @@ PHP;
                     return ['ok' => false, 'error' => 'Copy failed: '.$rel];
                 }
                 $files++;
-            }
-            $tick++;
-            // Approximate progress without pre-count (expensive on large trees)
-            $bucket = (int) floor(min(19, log(max(1, $tick), 1.45)));
-            if ($bucket !== $lastBucket) {
-                $lastBucket = $bucket;
-                $pct = (int) round($pctFrom + ($bucket / 19) * ($pctTo - $pctFrom));
-                WWC_Agent_Job_Progress::report($pct, 'Kopiere… '.$files.' Dateien · '.$rel);
             }
         }
 

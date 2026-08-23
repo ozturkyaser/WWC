@@ -12,7 +12,7 @@ class JobProgress
         'backup_incremental' => 90,
         'backup_scan' => 45,
         'restore_backup' => 300,
-        'staging_create' => 360,
+        'staging_create' => 1800,
         'staging_destroy' => 60,
         'staging_promote' => 240,
         'staging_update_plugin' => 120,
