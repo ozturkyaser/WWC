@@ -16,7 +16,7 @@ class BuildDevCloneJob implements ShouldQueue
 
     public int $tries = 1;
 
-    public int $timeout = 1600;
+    public int $timeout = 7200;
 
     /** @param bool $verifyOnly Nur Restore-Test: Clone nach erfolgreichem Bau wieder abbauen */
     public function __construct(public string $siteId, public bool $verifyOnly = false) {}

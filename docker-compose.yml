@@ -40,7 +40,7 @@ services:
   # Queue-Worker: verarbeitet Hintergrund-Jobs (Agent-Kommandos, Wartungs-Pipeline, Dev-Clones, Mails)
   worker:
     image: wwc-api
-    command: php artisan queue:work redis --sleep=1 --tries=3 --timeout=1700
+    command: php artisan queue:work redis --sleep=1 --tries=3 --timeout=7300
     volumes:
       - ./apps/api:/app
       - /var/run/docker.sock:/var/run/docker.sock

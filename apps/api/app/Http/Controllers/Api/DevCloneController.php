@@ -16,9 +16,9 @@ class DevCloneController extends Controller
         $orgId = $request->attributes->get('organization_id');
         $site = Site::where('organization_id', $orgId)->findOrFail($id);
 
-        if (! $clones->latestUsableBackup($site)) {
+        if (! $clones->canBuild($site)) {
             return response()->json([
-                'message' => 'Kein Backup auf dem WWC-Server vorhanden. Bitte zuerst ein Voll-Backup erstellen.',
+                'message' => 'Site ist nicht verbunden und es liegt kein Backup auf dem WWC-Server. Zuerst koppeln oder ein Voll-Backup anlegen.',
             ], 422);
         }
 

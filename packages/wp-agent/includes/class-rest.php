@@ -33,6 +33,16 @@ final class WWC_Agent_Rest
                 'callback' => [self::class, 'download_backup'],
                 'permission_callback' => [self::class, 'authorize'],
             ]);
+            register_rest_route('wwc/v1', '/backups/(?P<id>[a-zA-Z0-9\-_]+)/parts/(?P<name>[a-zA-Z0-9.\-_]+)', [
+                'methods' => 'GET',
+                'callback' => [self::class, 'stream_backup_part'],
+                'permission_callback' => [self::class, 'authorize'],
+            ]);
+            register_rest_route('wwc/v1', '/backups/(?P<id>[a-zA-Z0-9\-_]+)/parts', [
+                'methods' => 'GET',
+                'callback' => [self::class, 'list_backup_parts'],
+                'permission_callback' => [self::class, 'authorize'],
+            ]);
         });
     }
 
@@ -81,6 +91,47 @@ final class WWC_Agent_Rest
         header('Content-Disposition: attachment; filename="'.$filename.'"');
         header('Content-Length: '.(string) filesize($path));
         header('X-WWC-Backup-Id: '.$id);
+        readfile($path);
+        exit;
+    }
+
+    public static function list_backup_parts(WP_REST_Request $request): WP_REST_Response
+    {
+        $listed = WWC_Agent_Backup::payload_files((string) $request->get_param('id'));
+        if (! ($listed['ok'] ?? false)) {
+            return new WP_REST_Response($listed, 404);
+        }
+
+        return new WP_REST_Response($listed);
+    }
+
+    public static function stream_backup_part(WP_REST_Request $request)
+    {
+        $part = WWC_Agent_Backup::part_path(
+            (string) $request->get_param('id'),
+            (string) $request->get_param('name')
+        );
+        if (! ($part['ok'] ?? false)) {
+            return new WP_Error('wwc_backup', (string) ($part['error'] ?? 'Part missing'), ['status' => 404]);
+        }
+
+        $path = (string) $part['path'];
+        $name = (string) $part['name'];
+        $mime = 'application/octet-stream';
+        if (str_ends_with($name, '.zip')) {
+            $mime = 'application/zip';
+        } elseif (str_ends_with($name, '.json')) {
+            $mime = 'application/json';
+        } elseif (str_ends_with($name, '.sql')) {
+            $mime = 'application/sql';
+        }
+
+        nocache_headers();
+        header('Content-Type: '.$mime);
+        header('Content-Disposition: attachment; filename="'.$name.'"');
+        header('Content-Length: '.(string) filesize($path));
+        header('X-WWC-Backup-Id: '.(string) $part['backup_id']);
+        header('X-WWC-Part-Name: '.$name);
         readfile($path);
         exit;
     }

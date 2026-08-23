@@ -39,6 +39,7 @@ class DevCloneService
                 ? Crypt::decryptString($clone['admin_pass_encrypted'])
                 : null,
             'error' => $clone['error'] ?? null,
+            'message' => $clone['message'] ?? null,
             'built_at' => $clone['built_at'] ?? null,
             'last_dry_run' => $clone['last_dry_run'] ?? null,
         ];
@@ -46,10 +47,24 @@ class DevCloneService
 
     public function latestUsableBackup(Site $site): ?SiteBackup
     {
-        return SiteBackup::where('site_id', $site->id)
+        $candidates = SiteBackup::where('site_id', $site->id)
             ->where('status', 'stored')
             ->orderByDesc('backup_created_at')
-            ->first();
+            ->get();
+
+        foreach ($candidates as $backup) {
+            $path = (string) $backup->storage_path;
+            if ($path !== '' && (is_file($path) || is_dir($path))) {
+                return $backup;
+            }
+        }
+
+        return null;
+    }
+
+    public function canBuild(Site $site): bool
+    {
+        return $this->latestUsableBackup($site) !== null || (bool) $site->getHmacSecret();
     }
 
     /**
@@ -57,15 +72,28 @@ class DevCloneService
      */
     public function build(Site $site): void
     {
-        $backup = $this->latestUsableBackup($site);
-        if (! $backup) {
-            $this->setState($site, ['status' => 'failed', 'error' => 'Kein gespeichertes Backup auf dem WWC-Server vorhanden.']);
-
-            return;
-        }
-
         try {
-            $this->setState($site, ['status' => 'building', 'error' => null, 'backup_id' => $backup->backup_id]);
+            $backup = $this->latestUsableBackup($site);
+            if (! $backup) {
+                $this->setState($site, [
+                    'status' => 'building',
+                    'error' => null,
+                    'message' => 'Backup vom Kundenserver auf den WWC-Server holen…',
+                ]);
+                $backup = app(BackupPullService::class)->pullLatestFull(
+                    $site,
+                    function (string $msg) use ($site): void {
+                        $this->setState($site, ['status' => 'building', 'message' => $msg, 'error' => null]);
+                    }
+                );
+            }
+
+            $this->setState($site, [
+                'status' => 'building',
+                'error' => null,
+                'message' => 'Dev-Kopie auf dem WWC-Server bauen…',
+                'backup_id' => $backup->backup_id,
+            ]);
 
             $chain = $this->backupChain($site, $backup);
             $dir = $this->cloneDir($site);
@@ -80,7 +108,7 @@ class DevCloneService
             // 2. Laufzeit konfigurieren
             $port = $this->allocatePort($site);
             $phpImage = $this->matchPhpImage($site);
-            $cloneUrl = rtrim((string) config('wwc.clone_base_url'), '/').':'.$port;
+            $cloneUrl = $this->clonePublicUrl($port);
             $tablePrefix = $this->detectTablePrefix($dir.'/html/wp-config.php');
             $this->writeCloneWpConfig($dir, $tablePrefix, $cloneUrl);
             $this->writeGuardMuPlugin($dir);
@@ -129,6 +157,7 @@ class DevCloneService
                 'admin_user' => $adminUser,
                 'admin_pass_encrypted' => Crypt::encryptString($adminPass),
                 'error' => null,
+                'message' => null,
                 'built_at' => now()->toIso8601String(),
             ]);
 
@@ -138,7 +167,7 @@ class DevCloneService
             }
         } catch (\Throwable $e) {
             Log::error('Dev clone build failed', ['site' => $site->id, 'error' => $e->getMessage()]);
-            $this->setState($site, ['status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 500)]);
+            $this->setState($site, ['status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 500), 'message' => null]);
         }
     }
 
@@ -250,29 +279,33 @@ class DevCloneService
     }
 
     /**
-     * Entpackt ein Server-Archiv (manifest.json, database.sql, files.zip) in das
-     * Clone-Verzeichnis. Liefert das Manifest zurueck.
+     * Entpackt ein Server-Archiv (einzelnes Zip oder Verzeichnis mit files*.zip)
+     * in das Clone-Verzeichnis. Liefert das Manifest zurueck.
      */
     private function extractArchive(SiteBackup $backup, string $dir, bool $isBase): array
     {
-        $path = $backup->storage_path;
-        if (! $path || ! is_file($path)) {
+        $path = (string) $backup->storage_path;
+        $work = $dir.'/work';
+        $cleanupWork = true;
+
+        if ($path !== '' && is_dir($path)) {
+            $work = $path;
+            $cleanupWork = false;
+        } elseif ($path !== '' && is_file($path)) {
+            @mkdir($work, 0755, true);
+            $zip = new ZipArchive;
+            if ($zip->open($path) !== true) {
+                throw new RuntimeException("Archiv nicht lesbar: {$backup->backup_id}");
+            }
+            $zip->extractTo($work);
+            $zip->close();
+        } else {
             throw new RuntimeException("Archiv fehlt auf dem Server: {$backup->backup_id}");
         }
 
-        $work = $dir.'/work';
-        @mkdir($work, 0755, true);
-
-        $zip = new ZipArchive;
-        if ($zip->open($path) !== true) {
-            throw new RuntimeException("Archiv nicht lesbar: {$backup->backup_id}");
-        }
-        $zip->extractTo($work);
-        $zip->close();
-
         // database.sql: die neueste in der Kette gewinnt
         if (is_file($work.'/database.sql')) {
-            @rename($work.'/database.sql', $dir.'/database.sql');
+            copy($work.'/database.sql', $dir.'/database.sql');
         }
 
         $html = $dir.'/html';
@@ -307,9 +340,54 @@ class DevCloneService
             $manifest = json_decode((string) file_get_contents($work.'/manifest.json'), true) ?: [];
         }
 
-        $this->removeDirectory($work);
+        if ($cleanupWork) {
+            $this->removeDirectory($work);
+        }
 
         return $manifest;
+    }
+
+    public function clonePublicUrl(int $port): string
+    {
+        $configured = rtrim((string) config('wwc.clone_base_url'), '/');
+        $host = strtolower((string) (parse_url($configured, PHP_URL_HOST) ?: ''));
+        $scheme = strtolower((string) (parse_url($configured, PHP_URL_SCHEME) ?: 'http'));
+
+        $useConfigured = $host !== '' && ! $this->isLoopbackHost($host);
+        if (! $useConfigured && app()->environment('local') && $host !== '') {
+            $useConfigured = true;
+        }
+
+        if (! $useConfigured) {
+            foreach ([
+                (string) config('wwc.clone_base_url'),
+                (string) config('wwc.public_api_url'),
+                (string) config('wwc.portal_url'),
+                (string) config('app.url'),
+                'https://wwc.kiservicehub.de',
+            ] as $candidate) {
+                $ch = strtolower((string) (parse_url($candidate, PHP_URL_HOST) ?: ''));
+                if ($ch !== '' && ! $this->isLoopbackHost($ch)) {
+                    $host = $ch;
+                    $scheme = 'http';
+                    break;
+                }
+            }
+        }
+
+        if ($host === '') {
+            $host = 'localhost';
+            $scheme = 'http';
+        }
+
+        return $scheme.'://'.$host.':'.$port;
+    }
+
+    private function isLoopbackHost(string $host): bool
+    {
+        $host = strtolower($host);
+
+        return $host === '' || $host === 'localhost' || $host === '127.0.0.1' || $host === '::1' || str_ends_with($host, '.localhost');
     }
 
     // ---------------------------------------------------------------

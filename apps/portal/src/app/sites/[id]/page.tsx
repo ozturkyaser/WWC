@@ -48,6 +48,7 @@ type DevClone = {
   admin_user?: string | null;
   admin_pass?: string | null;
   error?: string | null;
+  message?: string | null;
   built_at?: string | null;
   last_dry_run?: {
     at?: string;
@@ -598,7 +599,7 @@ export default function SiteDetailPage() {
     try {
       await api(`/sites/${params.id}/dev-clone`, { method: "POST" });
       setMsgTone("info");
-      setMsg("Dev-Kopie wird gebaut – das dauert einige Minuten…");
+      setMsg("Isolierte Umgebung auf dem WWC-Server wird gebaut. Das Backup wird bei Bedarf vom Kunden geholt – das kann bei großen Sites länger dauern.");
       await load();
     } catch (e) {
       setMsgTone("error");
@@ -1794,9 +1795,113 @@ export default function SiteDetailPage() {
       })()}
 
       {tab === "staging" && (
+        <>
         <div className="surface surface-pad">
+          <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>
+            Isolierte Umgebung auf dem WWC-Server
+            {devClone?.status === "ready" && <span className="badge completed" style={{ marginLeft: 8 }}>bereit</span>}
+            {devClone?.status === "building" && <span className="badge running" style={{ marginLeft: 8 }}>wird gebaut…</span>}
+            {devClone?.status === "failed" && <span className="badge failed" style={{ marginLeft: 8 }}>fehlgeschlagen</span>}
+          </h3>
           <p className="muted" style={{ marginTop: 0 }}>
-            Isolierte Dev-Umgebung zum Testen. Promote übernimmt geprüfte Änderungen auf Live.
+            Kopie der Live-Site auf dem Proxmox-WWC-Server (eigener Docker-Stack, passende PHP-Version).
+            Änderungen und Tests bleiben isoliert – der Kundenhost (z. B. Strato) wird nicht belastet.
+            Fehlt das Backup noch auf dem Server, holt WWC das lokale Voll-Backup vom Agenten.
+          </p>
+          {devClone?.status === "building" && devClone.message && (
+            <p className="muted" style={{ marginTop: 0 }}>{devClone.message}</p>
+          )}
+          {devClone?.status === "ready" && (
+            <div className="meta-row" style={{ marginBottom: 10 }}>
+              {devClone.url && (
+                <span className="meta-chip">
+                  URL: <a href={devClone.url} target="_blank" rel="noreferrer">{devClone.url}</a>
+                </span>
+              )}
+              {devClone.admin_user && (
+                <span className="meta-chip">
+                  Admin: {devClone.admin_user}{devClone.admin_pass ? ` / ${devClone.admin_pass}` : ""}
+                </span>
+              )}
+              {devClone.backup_id && <span className="meta-chip">Quelle: {devClone.backup_id}</span>}
+              {devClone.php_image && <span className="meta-chip">PHP {devClone.php_image}</span>}
+            </div>
+          )}
+          {devClone?.status === "failed" && devClone.error && (
+            <div className="error" style={{ marginBottom: 10 }}>{devClone.error}</div>
+          )}
+          {devClone?.last_dry_run && (
+            <div style={{ marginBottom: 10 }}>
+              <p style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
+                <strong>Letzter Dry-Run</strong>{" "}
+                {devClone.last_dry_run.running ? (
+                  <span className="badge running">läuft…</span>
+                ) : devClone.last_dry_run.ok ? (
+                  <span className="badge completed">OK</span>
+                ) : (
+                  <span className="badge failed">Probleme</span>
+                )}
+                {devClone.last_dry_run.at && (
+                  <span className="muted" style={{ marginLeft: 8, fontSize: "0.8rem" }}>
+                    {new Date(devClone.last_dry_run.at).toLocaleString("de-DE")}
+                  </span>
+                )}
+              </p>
+              {(devClone.last_dry_run.items || []).map((it) => (
+                <div key={`${it.type}:${it.slug}`} className="cell-sub" style={{ fontSize: "0.82rem" }}>
+                  {it.ok ? "✓" : "✗"} {it.type}: {it.slug}
+                  {it.error ? ` – ${it.error}` : ""}
+                </div>
+              ))}
+              {devClone.last_dry_run.health_error && (
+                <div className="error" style={{ marginTop: 6 }}>{devClone.last_dry_run.health_error}</div>
+              )}
+              {!devClone.last_dry_run.running && devClone.last_dry_run.ok && (
+                <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
+                  Kopie läuft nach den Updates stabil – die Updates können live ausgeführt werden.
+                </p>
+              )}
+            </div>
+          )}
+          <div className="row">
+            {devClone?.status === "ready" && devClone.url && (
+              <>
+                <a className="btn" href={`${devClone.url}/wp-admin/`} target="_blank" rel="noreferrer">
+                  WP-Admin öffnen
+                </a>
+                <a className="btn secondary" href={devClone.url} target="_blank" rel="noreferrer">
+                  Frontend prüfen
+                </a>
+              </>
+            )}
+            <button
+              className="btn"
+              disabled={busy || devClone?.status === "building"}
+              type="button"
+              onClick={devCloneBuild}
+            >
+              {devClone?.status === "ready" ? "Neu aufbauen (aktuelles Backup)" : "Isolierte Umgebung erstellen"}
+            </button>
+            {devClone && devClone.status !== "building" && (
+              <button
+                className="btn danger"
+                disabled={busy}
+                type="button"
+                onClick={() => {
+                  if (confirm("Isolierte Umgebung auf dem WWC-Server löschen?")) devCloneDestroy();
+                }}
+              >
+                Löschen
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="surface surface-pad" style={{ marginTop: 18 }}>
+          <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>Staging auf der Kundenseite</h4>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Liegt auf dem Kundenhost (z. B. unter <code>/wp-content/wwc-staging/</code>).
+            Nur nötig, wenn die Kopie dort bleiben soll – für isolierte Änderungen den Bereich oben nutzen.
           </p>
           {stagingReady ? (
             <>
@@ -1868,109 +1973,12 @@ export default function SiteDetailPage() {
               </p>
             </>
           ) : (
-            <button className="btn" disabled={busy} type="button" onClick={() => run("staging_create", { with_backup: true })}>
-              Development-Umgebung erzeugen
+            <button className="btn secondary" disabled={busy} type="button" onClick={() => run("staging_create", { with_backup: true })}>
+              Staging auf der Kundenseite erzeugen
             </button>
           )}
-
-          <div className="surface surface-pad" style={{ marginTop: 18, background: "rgba(0,0,0,0.18)" }}>
-            <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>
-              WWC Dev-Kopie
-              {devClone?.status === "ready" && <span className="badge completed" style={{ marginLeft: 8 }}>bereit</span>}
-              {devClone?.status === "building" && <span className="badge running" style={{ marginLeft: 8 }}>wird gebaut…</span>}
-              {devClone?.status === "failed" && <span className="badge failed" style={{ marginLeft: 8 }}>fehlgeschlagen</span>}
-            </h4>
-            <p className="muted" style={{ margin: "0 0 10px", fontSize: "0.85rem" }}>
-              Kopie der Site aus dem letzten WWC-Server-Backup, gehostet auf dem WWC-Server im eigenen
-              Docker-Stack (passende PHP-Version). Belastet den Kundenserver überhaupt nicht –
-              ideal zum Testen von Updates und Änderungen.
-            </p>
-            {devClone?.status === "ready" && (
-              <div className="meta-row" style={{ marginBottom: 10 }}>
-                {devClone.url && (
-                  <span className="meta-chip">
-                    URL: <a href={devClone.url} target="_blank" rel="noreferrer">{devClone.url}</a>
-                  </span>
-                )}
-                {devClone.admin_user && (
-                  <span className="meta-chip">
-                    Admin: {devClone.admin_user}{devClone.admin_pass ? ` / ${devClone.admin_pass}` : ""}
-                  </span>
-                )}
-                {devClone.backup_id && <span className="meta-chip">Quelle: {devClone.backup_id}</span>}
-                {devClone.php_image && <span className="meta-chip">PHP {devClone.php_image}</span>}
-              </div>
-            )}
-            {devClone?.status === "failed" && devClone.error && (
-              <div className="error" style={{ marginBottom: 10 }}>{devClone.error}</div>
-            )}
-            {devClone?.last_dry_run && (
-              <div style={{ marginBottom: 10 }}>
-                <p style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
-                  <strong>Letzter Dry-Run</strong>{" "}
-                  {devClone.last_dry_run.running ? (
-                    <span className="badge running">läuft…</span>
-                  ) : devClone.last_dry_run.ok ? (
-                    <span className="badge completed">OK</span>
-                  ) : (
-                    <span className="badge failed">Probleme</span>
-                  )}
-                  {devClone.last_dry_run.at && (
-                    <span className="muted" style={{ marginLeft: 8, fontSize: "0.8rem" }}>
-                      {new Date(devClone.last_dry_run.at).toLocaleString("de-DE")}
-                    </span>
-                  )}
-                </p>
-                {(devClone.last_dry_run.items || []).map((it) => (
-                  <div key={`${it.type}:${it.slug}`} className="cell-sub" style={{ fontSize: "0.82rem" }}>
-                    {it.ok ? "✓" : "✗"} {it.type}: {it.slug}
-                    {it.error ? ` – ${it.error}` : ""}
-                  </div>
-                ))}
-                {devClone.last_dry_run.health_error && (
-                  <div className="error" style={{ marginTop: 6 }}>{devClone.last_dry_run.health_error}</div>
-                )}
-                {!devClone.last_dry_run.running && devClone.last_dry_run.ok && (
-                  <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
-                    Kopie läuft nach den Updates stabil – die Updates können live ausgeführt werden.
-                  </p>
-                )}
-              </div>
-            )}
-            <div className="row">
-              {devClone?.status === "ready" && devClone.url && (
-                <>
-                  <a className="btn" href={`${devClone.url}/wp-admin/`} target="_blank" rel="noreferrer">
-                    WP-Admin öffnen
-                  </a>
-                  <a className="btn secondary" href={devClone.url} target="_blank" rel="noreferrer">
-                    Frontend prüfen
-                  </a>
-                </>
-              )}
-              <button
-                className="btn secondary"
-                disabled={busy || devClone?.status === "building"}
-                type="button"
-                onClick={devCloneBuild}
-              >
-                {devClone?.status === "ready" ? "Neu aufbauen (aktuelles Backup)" : "Dev-Kopie erstellen"}
-              </button>
-              {devClone && devClone.status !== "building" && (
-                <button
-                  className="btn danger"
-                  disabled={busy}
-                  type="button"
-                  onClick={() => {
-                    if (confirm("WWC Dev-Kopie löschen?")) devCloneDestroy();
-                  }}
-                >
-                  Löschen
-                </button>
-              )}
-            </div>
-          </div>
         </div>
+        </>
       )}
 
       {tab === "activity" && (

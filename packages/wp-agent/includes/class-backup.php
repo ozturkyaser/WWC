@@ -498,12 +498,98 @@ final class WWC_Agent_Backup
     public static function latest_full(): ?array
     {
         foreach (self::list()['backups'] as $b) {
-            if (($b['type'] ?? '') === 'full') {
+            if (($b['type'] ?? '') === 'full' && empty($b['incomplete'])) {
                 return $b;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Files the WWC server can pull one-by-one (no mega-export zip).
+     *
+     * @return array{ok:bool,backup_id?:string,type?:string,created_at?:string|null,wp_version?:string|null,file_count?:int|null,files?:list<array{name:string,size:int}>,error?:string}
+     */
+    public static function payload_files(string $backupId): array
+    {
+        $resolved = self::resolve_backup_id($backupId);
+        if ($resolved === null) {
+            return ['ok' => false, 'error' => 'Kein vollständiges Backup vorhanden'];
+        }
+
+        $dir = self::root().'/'.$resolved;
+        if (! is_dir($dir)) {
+            return ['ok' => false, 'error' => 'Backup not found'];
+        }
+
+        $names = array_merge(['manifest.json', 'database.sql', 'filemap.json'], self::list_file_archives($dir));
+        if (is_file($dir.'/changed.zip')) {
+            $names[] = 'changed.zip';
+        }
+
+        $files = [];
+        foreach ($names as $name) {
+            $path = $dir.'/'.$name;
+            if (is_file($path)) {
+                $files[] = ['name' => $name, 'size' => (int) filesize($path)];
+            }
+        }
+
+        $manifest = self::read_json_file($dir.'/manifest.json') ?? [];
+
+        return [
+            'ok' => true,
+            'backup_id' => $resolved,
+            'type' => is_string($manifest['type'] ?? null) ? $manifest['type'] : 'full',
+            'created_at' => is_string($manifest['created_at'] ?? null) ? $manifest['created_at'] : null,
+            'wp_version' => is_string($manifest['wp_version'] ?? null) ? $manifest['wp_version'] : null,
+            'file_count' => isset($manifest['file_count']) ? (int) $manifest['file_count'] : null,
+            'files' => $files,
+        ];
+    }
+
+    /**
+     * @return array{ok:bool,path?:string,backup_id?:string,name?:string,error?:string}
+     */
+    public static function part_path(string $backupId, string $name): array
+    {
+        $resolved = self::resolve_backup_id($backupId);
+        if ($resolved === null) {
+            return ['ok' => false, 'error' => 'Kein vollständiges Backup vorhanden'];
+        }
+
+        $name = basename($name);
+        if (! self::is_allowed_part_name($name)) {
+            return ['ok' => false, 'error' => 'Ungültiger Dateiname'];
+        }
+
+        $path = self::root().'/'.$resolved.'/'.$name;
+        if (! is_file($path) || ! is_readable($path)) {
+            return ['ok' => false, 'error' => 'Datei nicht gefunden'];
+        }
+
+        return ['ok' => true, 'path' => $path, 'backup_id' => $resolved, 'name' => $name];
+    }
+
+    public static function is_allowed_part_name(string $name): bool
+    {
+        $name = basename($name);
+
+        return in_array($name, ['manifest.json', 'database.sql', 'filemap.json', 'changed.zip', 'files.zip'], true)
+            || preg_match('/^files-\d+\.zip$/', $name) === 1;
+    }
+
+    private static function resolve_backup_id(string $backupId): ?string
+    {
+        $backupId = self::sanitize_id($backupId);
+        if ($backupId === 'latest' || $backupId === 'latest-full') {
+            $latest = self::latest_full();
+
+            return $latest ? (string) $latest['id'] : null;
+        }
+
+        return $backupId !== '' ? $backupId : null;
     }
 
     /**

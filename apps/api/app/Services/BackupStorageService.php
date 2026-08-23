@@ -27,6 +27,17 @@ class BackupStorageService
         return $this->directory($site).'/'.$this->sanitizeId($backupId).'.zip';
     }
 
+    /** Verzeichnis für mehrteilige Backups (files.zip, files-2.zip, database.sql). */
+    public function payloadDir(Site $site, string $backupId): string
+    {
+        $dir = $this->directory($site).'/'.$this->sanitizeId($backupId);
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        return $dir;
+    }
+
     public function partPath(Site $site, string $backupId): string
     {
         return $this->finalPath($site, $backupId).'.part';
@@ -153,6 +164,14 @@ class BackupStorageService
                 @unlink($file);
             }
         }
+        $payload = $this->directory($site).'/'.$backupId;
+        if (is_dir($payload)) {
+            $this->removeTree($payload);
+        }
+        $stored = (string) ($record?->storage_path ?? '');
+        if ($stored !== '' && is_dir($stored) && realpath($stored) !== realpath($payload)) {
+            $this->removeTree($stored);
+        }
         $record?->delete();
 
         return true;
@@ -163,11 +182,23 @@ class BackupStorageService
         SiteBackup::where('site_id', $site->id)->delete();
         $dir = storage_path('app/wwc-backups/'.$site->id);
         if (is_dir($dir)) {
-            foreach (glob($dir.'/*') ?: [] as $file) {
-                @unlink($file);
-            }
-            @rmdir($dir);
+            $this->removeTree($dir);
         }
+    }
+
+    private function removeTree(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($items as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($dir);
     }
 
     /**
