@@ -25,6 +25,8 @@ return [
     */
     'clones_host_dir' => env('WWC_CLONES_HOST_DIR'),
     'clone_base_url' => env('WWC_CLONE_BASE_URL', 'http://localhost'),
+    // LAN-IP des WWC-Servers, Fallback wenn jemand den Docker-Port direkt oeffnet
+    'clone_lan_host' => env('WWC_CLONE_LAN_HOST', '192.168.1.248'),
     'clone_port_min' => (int) env('WWC_CLONE_PORT_MIN', 9100),
     'clone_port_max' => (int) env('WWC_CLONE_PORT_MAX', 9299),
 

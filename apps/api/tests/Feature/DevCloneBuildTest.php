@@ -51,7 +51,7 @@ class DevCloneBuildTest extends TestCase
         ]);
 
         $this->assertSame(
-            'http://wwc.kiservicehub.de:9123',
+            'https://wwc.kiservicehub.de/clone/9123',
             app(DevCloneService::class)->clonePublicUrl(9123)
         );
     }
@@ -66,13 +66,23 @@ class DevCloneBuildTest extends TestCase
         );
     }
 
+    public function test_old_cloudflare_port_url_needs_repair(): void
+    {
+        $svc = app(DevCloneService::class);
+        $this->assertTrue($svc->urlNeedsCloudflareRepair('http://wwc.kiservicehub.de:9123'));
+        $this->assertFalse($svc->urlNeedsCloudflareRepair('https://wwc.kiservicehub.de/clone/9123'));
+    }
+
     public function test_clone_url_keeps_localhost_in_local(): void
     {
         $this->app['env'] = 'local';
-        config(['wwc.clone_base_url' => 'http://localhost']);
+        config([
+            'wwc.clone_base_url' => 'http://localhost',
+            'wwc.portal_url' => 'http://localhost:3000',
+        ]);
 
         $this->assertSame(
-            'http://localhost:9100',
+            'http://localhost:3000/clone/9100',
             app(DevCloneService::class)->clonePublicUrl(9100)
         );
     }

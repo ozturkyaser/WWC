@@ -29,9 +29,25 @@ class DevCloneService
             return null;
         }
 
+        if (($clone['status'] ?? '') === 'ready' && $this->urlNeedsCloudflareRepair((string) ($clone['url'] ?? ''))) {
+            $attempted = $clone['url_repair_attempted_at'] ?? null;
+            $recent = is_string($attempted) && now()->parse($attempted)->greaterThan(now()->subMinutes(10));
+            if (! $recent) {
+                try {
+                    $this->repairPublicUrl($site);
+                    $clone = $site->fresh()->dev_clone ?? $clone;
+                } catch (\Throwable $e) {
+                    Log::info('clone url repair skipped', ['site' => $site->id, 'error' => $e->getMessage()]);
+                    $this->setState($site, ['url_repair_attempted_at' => now()->toIso8601String()]);
+                    $clone = $site->fresh()->dev_clone ?? $clone;
+                }
+            }
+        }
+
         return [
             'status' => $clone['status'] ?? 'unknown',
             'url' => $clone['url'] ?? null,
+            'lan_url' => $clone['lan_url'] ?? null,
             'backup_id' => $clone['backup_id'] ?? null,
             'php_image' => $clone['php_image'] ?? null,
             'admin_user' => $clone['admin_user'] ?? null,
@@ -153,6 +169,7 @@ class DevCloneService
                 'status' => 'ready',
                 'port' => $port,
                 'url' => $cloneUrl,
+                'lan_url' => $this->cloneLanUrl($port),
                 'backup_id' => $backup->backup_id,
                 'php_image' => $phpImage,
                 'admin_user' => $adminUser,
@@ -413,34 +430,111 @@ class DevCloneService
         $host = strtolower((string) (parse_url($configured, PHP_URL_HOST) ?: ''));
         $scheme = strtolower((string) (parse_url($configured, PHP_URL_SCHEME) ?: 'http'));
 
-        $useConfigured = $host !== '' && ! $this->isLoopbackHost($host);
-        if (! $useConfigured && app()->environment('local') && $host !== '') {
-            $useConfigured = true;
+        // Explizite LAN-Basis (nicht Cloudflare-Portal, nicht localhost)
+        if ($host !== '' && ! $this->isLoopbackHost($host) && ! $this->isProxiedPortalHost($host)) {
+            return $scheme.'://'.$host.':'.$port;
         }
 
-        if (! $useConfigured) {
-            foreach ([
-                (string) config('wwc.clone_base_url'),
-                (string) config('wwc.public_api_url'),
-                (string) config('wwc.portal_url'),
-                (string) config('app.url'),
-                'https://wwc.kiservicehub.de',
-            ] as $candidate) {
-                $ch = strtolower((string) (parse_url($candidate, PHP_URL_HOST) ?: ''));
-                if ($ch !== '' && ! $this->isLoopbackHost($ch)) {
-                    $host = $ch;
-                    $scheme = 'http';
-                    break;
-                }
+        if (app()->environment('local')) {
+            $portal = rtrim((string) config('wwc.portal_url', 'http://localhost:3000'), '/');
+            if ($this->isLoopbackHost((string) parse_url($portal, PHP_URL_HOST))) {
+                return $portal.'/clone/'.$port;
+            }
+
+            return 'http://localhost:'.$port;
+        }
+
+        return $this->publicPortalOrigin().'/clone/'.$port;
+    }
+
+    public function cloneLanUrl(int $port): string
+    {
+        $configured = rtrim((string) config('wwc.clone_base_url'), '/');
+        $host = strtolower((string) (parse_url($configured, PHP_URL_HOST) ?: ''));
+        if ($host !== '' && ! $this->isLoopbackHost($host) && ! $this->isProxiedPortalHost($host)) {
+            $scheme = strtolower((string) (parse_url($configured, PHP_URL_SCHEME) ?: 'http'));
+
+            return $scheme.'://'.$host.':'.$port;
+        }
+
+        $lan = (string) config('wwc.clone_lan_host', '192.168.1.248');
+
+        return 'http://'.$lan.':'.$port;
+    }
+
+    public function urlNeedsCloudflareRepair(string $url): bool
+    {
+        if ($url === '') {
+            return false;
+        }
+        $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?: ''));
+        $port = (int) (parse_url($url, PHP_URL_PORT) ?: 0);
+
+        return $port >= 9100 && $port <= 9299 && $this->isProxiedPortalHost($host);
+    }
+
+    public function repairPublicUrl(Site $site): void
+    {
+        $clone = $site->dev_clone ?? [];
+        $port = (int) ($clone['port'] ?? 0);
+        if ($port < 9100) {
+            return;
+        }
+        $old = (string) ($clone['url'] ?? '');
+        $new = $this->clonePublicUrl($port);
+        if ($old === $new) {
+            $this->setState($site, ['lan_url' => $this->cloneLanUrl($port)]);
+
+            return;
+        }
+
+        $dir = $this->cloneDir($site);
+        $this->rewriteCloneHome($dir, $new);
+        if ($old !== '') {
+            $this->wp($dir, $this->projectName($site), ['search-replace', $old, $new, '--all-tables', '--report-changed-only'], true);
+        }
+        $this->setState($site, [
+            'url' => $new,
+            'lan_url' => $this->cloneLanUrl($port),
+            'url_repaired' => now()->toIso8601String(),
+        ]);
+    }
+
+    private function publicPortalOrigin(): string
+    {
+        foreach ([
+            (string) config('wwc.portal_url'),
+            (string) config('app.url'),
+            'https://wwc.kiservicehub.de',
+        ] as $candidate) {
+            $host = strtolower((string) (parse_url($candidate, PHP_URL_HOST) ?: ''));
+            if ($host !== '' && ! $this->isLoopbackHost($host)) {
+                $scheme = strtolower((string) (parse_url($candidate, PHP_URL_SCHEME) ?: 'https'));
+
+                return $scheme.'://'.$host;
             }
         }
 
-        if ($host === '') {
-            $host = 'localhost';
-            $scheme = 'http';
-        }
+        return 'https://wwc.kiservicehub.de';
+    }
 
-        return $scheme.'://'.$host.':'.$port;
+    private function isProxiedPortalHost(string $host): bool
+    {
+        $host = strtolower($host);
+
+        return $host === 'wwc.kiservicehub.de' || str_ends_with($host, '.kiservicehub.de');
+    }
+
+    private function rewriteCloneHome(string $dir, string $cloneUrl): void
+    {
+        $path = $dir.'/html/wp-config.php';
+        if (! is_file($path)) {
+            return;
+        }
+        $src = (string) file_get_contents($path);
+        $src = preg_replace("/define\('WP_HOME',\s*'[^']*'\);/", "define('WP_HOME', '{$cloneUrl}');", $src) ?? $src;
+        $src = preg_replace("/define\('WP_SITEURL',\s*'[^']*'\);/", "define('WP_SITEURL', '{$cloneUrl}');", $src) ?? $src;
+        file_put_contents($path, $src);
     }
 
     private function isLoopbackHost(string $host): bool
@@ -487,9 +581,21 @@ class DevCloneService
             $salts .= sprintf("define('%s', '%s');\n", $key, bin2hex(random_bytes(32)));
         }
 
+        $pathPrefix = rtrim((string) (parse_url($cloneUrl, PHP_URL_PATH) ?: ''), '/');
+        $cookie = '';
+        if ($pathPrefix !== '') {
+            $cookie = "define('COOKIEPATH', '{$pathPrefix}/');\n"
+                ."define('SITECOOKIEPATH', '{$pathPrefix}/');\n"
+                ."define('ADMIN_COOKIE_PATH', '{$pathPrefix}/wp-admin');\n"
+                ."define('COOKIE_DOMAIN', '');\n";
+        }
+
         $config = <<<PHP
 <?php
 // Von WWC generierte Dev-Clone-Konfiguration (Original: wp-config.orig.php)
+if (!empty(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+    \$_SERVER['HTTPS'] = 'on';
+}
 define('DB_NAME', 'wordpress');
 define('DB_USER', 'wordpress');
 define('DB_PASSWORD', 'wordpress');
@@ -502,7 +608,7 @@ define('DB_COLLATE', '');
 
 define('WP_HOME', '{$cloneUrl}');
 define('WP_SITEURL', '{$cloneUrl}');
-define('WP_ENVIRONMENT_TYPE', 'staging');
+{$cookie}define('WP_ENVIRONMENT_TYPE', 'staging');
 define('AUTOMATIC_UPDATER_DISABLED', true);
 define('DISALLOW_FILE_EDIT', true);
 define('WP_DEBUG', true);

@@ -44,6 +44,7 @@ type BackupSchedule = {
 type DevClone = {
   status: string;
   url?: string | null;
+  lan_url?: string | null;
   backup_id?: string | null;
   php_image?: string | null;
   admin_user?: string | null;
@@ -1832,6 +1833,11 @@ export default function SiteDetailPage() {
               {devClone.url && (
                 <span className="meta-chip">
                   URL: <a href={devClone.url} target="_blank" rel="noreferrer">{devClone.url}</a>
+                </span>
+              )}
+              {devClone.lan_url && (
+                <span className="meta-chip">
+                  LAN: <a href={devClone.lan_url} target="_blank" rel="noreferrer">{devClone.lan_url}</a>
                 </span>
               )}
               {devClone.admin_user && (
