@@ -19,7 +19,7 @@ class McpController extends Controller
             'tools' => [
                 [
                     'name' => 'wwc_site_scan',
-                    'description' => 'Scannt Theme, Plugins, Editoren, Seiten und Branding (Dev-Kopie bevorzugt).',
+                    'description' => 'Scannt Theme, Plugins, Editoren, Seiten und Branding in der isolierten Dev-Umgebung.',
                     'input' => ['site_id' => 'uuid'],
                 ],
                 [

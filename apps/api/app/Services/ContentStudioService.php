@@ -37,24 +37,12 @@ class ContentStudioService
 
     public function scan(Site $site): array
     {
-        if ($this->clones->isReady($site)) {
-            $intel = $this->clones->scanClone($site);
-            $this->storeIntel($site, $intel, 'clone');
-
-            return $this->payload($site->fresh() ?? $site);
+        if (! $this->clones->isReady($site)) {
+            throw new RuntimeException('Zuerst die isolierte Umgebung auf dem WWC-Server erstellen. Die KI arbeitet dort, nicht auf Live.');
         }
 
-        if (! $site->getHmacSecret()) {
-            throw new RuntimeException('Weder Dev-Kopie noch gekoppelter Agent verfügbar.');
-        }
-
-        $job = $this->dispatcher->dispatch($site, 'site_scan');
-        $studio = $site->content_studio ?? [];
-        $studio['draft'] = array_merge($studio['draft'] ?? [], [
-            'status' => 'scanning',
-            'job_id' => $job->id,
-        ]);
-        $site->update(['content_studio' => $studio]);
+        $intel = $this->clones->scanClone($site);
+        $this->storeIntel($site, $intel, 'clone');
 
         return $this->payload($site->fresh() ?? $site);
     }

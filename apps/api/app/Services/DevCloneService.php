@@ -784,7 +784,7 @@ PHP);
             $this->projectName($site),
             ['eval-file', '/var/www/html/wp-content/mu-plugins/wwc-intel-run.php', 'scan']
         );
-        $json = json_decode(trim($out), true);
+        $json = $this->decodeWpJson($out);
         if (! is_array($json) || empty($json['ok'])) {
             throw new RuntimeException('Clone-Scan fehlgeschlagen: '.mb_substr(trim($out), 0, 240));
         }
@@ -809,7 +809,7 @@ PHP);
         } finally {
             @unlink($opsPath);
         }
-        $json = json_decode(trim($out), true);
+        $json = $this->decodeWpJson($out);
         if (! is_array($json)) {
             throw new RuntimeException('Clone-Apply fehlgeschlagen: '.mb_substr(trim($out), 0, 240));
         }
@@ -830,6 +830,24 @@ PHP);
         }
 
         return '/var/www/html/wp-content/uploads/wwc-in/'.$safe;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function decodeWpJson(string $out): ?array
+    {
+        $out = trim($out);
+        $json = json_decode($out, true);
+        if (is_array($json)) {
+            return $json;
+        }
+        if (preg_match('/\{.*\}\s*$/s', $out, $m) === 1) {
+            $json = json_decode($m[0], true);
+            if (is_array($json)) {
+                return $json;
+            }
+        }
+
+        return null;
     }
 
     private function intelLibPath(): string

@@ -12,7 +12,7 @@ const TOKEN = process.env.WWC_API_TOKEN || "";
 const DEFAULT_SITE = process.env.WWC_SITE_ID || "";
 
 const TOOLS = [
-  { name: "wwc_site_scan", description: "Scannt Theme, Plugins, Editoren und Seiten (Dev-Kopie bevorzugt).", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
+  { name: "wwc_site_scan", description: "Scannt Theme, Plugins, Editoren und Seiten in der isolierten Dev-Umgebung.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
   { name: "wwc_content_plan", description: "Erzeugt einen Änderungsplan aus einer Anweisung.", inputSchema: { type: "object", required: ["prompt"], properties: { site_id: { type: "string" }, prompt: { type: "string" } } } },
   { name: "wwc_apply_dev", description: "Wendet den Plan nur in der isolierten Dev-Umgebung an.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },
   { name: "wwc_promote_live", description: "Übernimmt den in Dev geprüften Plan auf Live.", inputSchema: { type: "object", properties: { site_id: { type: "string" } } } },

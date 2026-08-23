@@ -111,25 +111,12 @@ class MaintenanceAgentService
             return $run->fresh();
         }
 
-        if (! $site->getHmacSecret()) {
+        if (! app(DevCloneService::class)->isReady($site)) {
             $run->update([
                 'status' => 'needs_review',
-                'error' => 'Site nicht gepairt – Dry-Run/Live nicht möglich',
+                'error' => 'Keine isolierte Umgebung auf dem WWC-Server. Bitte im Tab Development erstellen, dann den Plan ausführen.',
                 'finished_at' => now(),
             ]);
-
-            return $run->fresh();
-        }
-
-        $stagingExists = (bool) ($site->health['staging']['exists'] ?? false) || (bool) $site->staging_ready_at;
-        if (! $stagingExists) {
-            $stagingJob = $this->dispatcher->dispatch($site, 'staging_create', ['with_backup' => true], null);
-            $run->update([
-                'status' => 'dry_running',
-                'staging_job_id' => $stagingJob->id,
-                'technician_notes' => trim(($run->technician_notes ?? '')."\nStaging wird für Dry-Run angelegt…"),
-            ]);
-            MaintenanceContinueJob::dispatch($run->id)->delay(now()->addMinutes(2));
 
             return $run->fresh();
         }
@@ -233,6 +220,107 @@ class MaintenanceAgentService
             'slug' => $u['slug'] ?? '',
         ], $updates);
 
+        $this->startLiveUpdates($site, $run, $liveItems);
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $updates
+     */
+    private function dispatchDryRun(Site $site, MaintenanceRun $run, array $updates): MaintenanceRun
+    {
+        $items = array_values(array_filter(array_map(static function ($u) {
+            $type = (string) ($u['type'] ?? '');
+            if (! in_array($type, ['plugin', 'theme', 'core'], true)) {
+                return null;
+            }
+
+            return [
+                'type' => $type,
+                'slug' => $u['slug'] ?? '',
+            ];
+        }, $updates)));
+
+        if ($items === []) {
+            $run->update(['status' => 'completed', 'finished_at' => now()]);
+
+            return $run->fresh();
+        }
+
+        \App\Jobs\CloneDryRunJob::dispatch($site->id, $items, $run->id);
+        $run->update([
+            'status' => 'dry_running',
+            'plan' => array_merge($run->plan ?? [], ['dry_run_target' => 'clone']),
+            'technician_notes' => trim(($run->technician_notes ?? '')."\nDry-Run in der isolierten Umgebung (".count($items).' Updates).'),
+        ]);
+
+        return $run->fresh();
+    }
+
+    /**
+     * @param  array{ok?:bool,items?:list<array>,health_error?:string|null,ai_review?:array}  $report
+     */
+    public function afterCloneDryRun(string $runId, array $report): void
+    {
+        $run = MaintenanceRun::find($runId);
+        if (! $run || $run->status !== 'dry_running') {
+            return;
+        }
+        $site = $run->site;
+        if (! $site) {
+            return;
+        }
+
+        $ok = (bool) ($report['ok'] ?? false);
+        $itemFails = collect($report['items'] ?? [])->filter(fn ($r) => ! ($r['ok'] ?? false))->values()->all();
+        $review = $report['ai_review'] ?? null;
+
+        if (! $ok || $itemFails !== []) {
+            $hint = $report['health_error']
+                ?? ($review['summary'] ?? null)
+                ?? 'Dry-Run in der isolierten Umgebung nicht OK – Live gestoppt';
+            $run->update([
+                'status' => 'needs_review',
+                'error' => $hint,
+                'plan' => array_merge($run->plan ?? [], [
+                    'dry_run_failures' => $itemFails,
+                    'clone_review' => $review,
+                ]),
+                'finished_at' => now(),
+                'technician_notes' => trim(($run->technician_notes ?? '')."\nDry-Run (isolierte Umgebung): Fehler."),
+            ]);
+
+            return;
+        }
+
+        $run->update([
+            'technician_notes' => trim(($run->technician_notes ?? '')."\nDry-Run in der isolierten Umgebung OK"
+                .(is_array($review) && ! empty($review['summary']) ? ': '.$review['summary'] : '.')),
+            'plan' => array_merge($run->plan ?? [], ['clone_review' => $review]),
+        ]);
+
+        if (! $site->getHmacSecret()) {
+            $run->update([
+                'status' => 'needs_review',
+                'error' => 'Dry-Run OK, aber Live-Site ist nicht verbunden.',
+                'finished_at' => now(),
+            ]);
+
+            return;
+        }
+
+        $updates = $run->fresh()->plan['updates'] ?? [];
+        $liveItems = array_map(static fn ($u) => [
+            'type' => $u['type'],
+            'slug' => $u['slug'] ?? '',
+        ], $updates);
+        $this->startLiveUpdates($site, $run->fresh(), $liveItems);
+    }
+
+    /**
+     * @param  list<array{type:mixed,slug?:mixed}>  $liveItems
+     */
+    private function startLiveUpdates(Site $site, MaintenanceRun $run, array $liveItems): void
+    {
         try {
             $liveJob = $this->dispatcher->dispatch($site, 'update_batch', [
                 'mode' => 'live',
@@ -246,6 +334,7 @@ class MaintenanceAgentService
                 'live_job_id' => $liveJob->id,
                 'technician_notes' => trim(($run->technician_notes ?? '')."\nDry-Run OK → Live-Updates gestartet."),
             ]);
+            MaintenanceContinueJob::dispatch($run->id)->delay(now()->addMinutes(2));
         } catch (\Throwable $e) {
             $run->update([
                 'status' => 'needs_review',
@@ -253,58 +342,6 @@ class MaintenanceAgentService
                 'finished_at' => now(),
             ]);
         }
-    }
-
-    /**
-     * @param  list<array<string,mixed>>  $updates
-     */
-    private function dispatchDryRun(Site $site, MaintenanceRun $run, array $updates): MaintenanceRun
-    {
-        $items = array_values(array_filter(array_map(static function ($u) {
-            if (($u['type'] ?? '') === 'core') {
-                return null; // core dry-run not supported in staging updater
-            }
-
-            return [
-                'type' => $u['type'],
-                'slug' => $u['slug'] ?? '',
-            ];
-        }, $updates)));
-
-        $coreOnly = $items === [] && collect($updates)->contains(fn ($u) => ($u['type'] ?? '') === 'core');
-        if ($coreOnly) {
-            // Core: skip dry-run, apply live if auto (higher risk → needs_review unless explicit)
-            $run->update([
-                'status' => 'needs_review',
-                'error' => 'Nur Core-Update geplant – bitte manuell live bestätigen (kein Staging-Dry-Run für Core)',
-                'finished_at' => now(),
-            ]);
-
-            return $run->fresh();
-        }
-
-        if ($items === []) {
-            $run->update(['status' => 'completed', 'finished_at' => now()]);
-
-            return $run->fresh();
-        }
-
-        $job = $this->dispatcher->dispatch($site, 'update_batch', [
-            'mode' => 'staging',
-            'items' => $items,
-            'reason' => 'maintenance_agent_dry_run',
-            'maintenance_run_id' => $run->id,
-        ], null);
-
-        $run->update([
-            'status' => 'dry_running',
-            'dry_run_job_id' => $job->id,
-            'technician_notes' => trim(($run->technician_notes ?? '')."\nDry-Run Batch gestartet (".count($items).' Updates).'),
-        ]);
-
-        MaintenanceContinueJob::dispatch($run->id)->delay(now()->addMinutes(3));
-
-        return $run->fresh();
     }
 
     public function buildAudit(Site $site): array

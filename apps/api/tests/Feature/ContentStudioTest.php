@@ -8,7 +8,6 @@ use App\Models\Site;
 use App\Models\User;
 use App\Services\ContentStudioService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class ContentStudioTest extends TestCase
@@ -106,22 +105,22 @@ class ContentStudioTest extends TestCase
         $this->assertSame('create_post', $ops[1]['op']);
     }
 
-    public function test_mcp_tools_and_scan_without_clone_dispatches_agent(): void
+    public function test_scan_and_mcp_require_clone(): void
     {
-        Queue::fake();
-        $this->site->setHmacSecret('secret');
-        $this->site->save();
-
         $this->withToken($this->token)
             ->getJson('/api/mcp/tools')
             ->assertOk()
             ->assertJsonPath('tools.0.name', 'wwc_site_scan');
 
         $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/scan')
+            ->assertStatus(422);
+
+        $this->withToken($this->token)
             ->postJson('/api/mcp/call', [
                 'tool' => 'wwc_site_scan',
                 'site_id' => $this->site->id,
             ])
-            ->assertOk();
+            ->assertStatus(422);
     }
 }

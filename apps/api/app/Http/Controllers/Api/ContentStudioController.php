@@ -20,7 +20,11 @@ class ContentStudioController extends Controller
     public function scan(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);
-        $data = $studio->scan($site);
+        try {
+            $data = $studio->scan($site);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
         AuditLogger::log('site.content.scan', $request->attributes->get('organization_id'), $request->user(), $site->id, [], $request);
 
         return response()->json(['data' => $data]);

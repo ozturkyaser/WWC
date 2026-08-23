@@ -104,8 +104,8 @@ export function ContentStudio({
       {msg && <p className={msg.includes("fehl") || msg.includes("Fehler") ? "error" : "muted"}>{msg}</p>}
 
       <div className="row" style={{ marginBottom: 14 }}>
-        <button className="btn" type="button" disabled={busy} onClick={() => run("scan")}>
-          Website scannen
+        <button className="btn" type="button" disabled={busy || !studio.clone_ready} onClick={() => run("scan")}>
+          Dev-Umgebung scannen
         </button>
         {studio.clone_url && (
           <a className="btn secondary" href={studio.clone_url} target="_blank" rel="noreferrer">

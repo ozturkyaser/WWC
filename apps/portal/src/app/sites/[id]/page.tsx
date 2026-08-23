@@ -532,7 +532,7 @@ export default function SiteDetailPage() {
     try {
       await api(`/sites/${params.id}/maintenance/runs/${runId}/execute`, { method: "POST" });
       setMsgTone("ok");
-      setMsg("Dry-Run → Live gestartet");
+      setMsg("Dry-Run in der isolierten Umgebung gestartet. Live nur wenn die KI die Logs freigibt.");
       await load();
     } catch (e) {
       setMsgTone("error");
@@ -775,8 +775,12 @@ export default function SiteDetailPage() {
             <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>KI-Wartungsagent</h3>
             <p className="muted" style={{ marginTop: 0 }}>
               Prüft die Site wie ein Techniker: Security, genutzte/ungenutzte Plugins & Themes, Updates.
-              Bei Bedarf Dry-Run auf Staging, danach Live – nach Plan (täglich/wöchentlich/monatlich).
+              Dry-Run läuft in der isolierten Umgebung auf dem WWC-Server (Tab Development), nicht auf dem Kundenhost.
+              Die KI prüft danach die Logs – Live nur wenn alles OK ist.
             </p>
+            {devClone?.status !== "ready" && (
+              <p className="error">Zuerst im Tab Development die isolierte Umgebung erstellen. Ohne sie führt die KI keinen Dry-Run aus.</p>
+            )}
 
             <div className="grid two" style={{ marginBottom: 16 }}>
               <div>
@@ -809,7 +813,7 @@ export default function SiteDetailPage() {
                     disabled={maintBusy}
                     onChange={(e) => saveMaintenance({ auto_apply: e.target.checked })}
                   />
-                  Auto: Dry-Run → bei OK Live-Updates
+                  Auto: Dry-Run in der isolierten Umgebung → bei OK Live-Updates
                 </label>
                 <p className="muted" style={{ marginTop: 10, fontSize: "0.85rem" }}>
                   Letzter Lauf: {m?.last_run_at ? new Date(m.last_run_at).toLocaleString("de-DE") : "–"}
@@ -824,15 +828,15 @@ export default function SiteDetailPage() {
                 <button
                   className="btn secondary"
                   type="button"
-                  disabled={maintBusy || busy}
+                  disabled={maintBusy || busy || devClone?.status !== "ready"}
                   onClick={() => {
-                    if (confirm("Audit + Dry-Run und bei Erfolg Live-Updates?")) runMaintenance(true);
+                    if (confirm("Audit + Dry-Run in der isolierten Umgebung und bei Erfolg Live-Updates?")) runMaintenance(true);
                   }}
                 >
                   Audit + ausführen
                 </button>
                 {run && ["planned", "needs_review"].includes(run.status) && (plan?.updates?.length || 0) > 0 && (
-                  <button className="btn" type="button" disabled={maintBusy} onClick={() => executeMaintenancePlan(run.id)}>
+                  <button className="btn" type="button" disabled={maintBusy || devClone?.status !== "ready"} onClick={() => executeMaintenancePlan(run.id)}>
                     Plan jetzt ausführen
                   </button>
                 )}
