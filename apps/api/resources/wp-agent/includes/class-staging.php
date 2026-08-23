@@ -407,6 +407,48 @@ add_action('init', $wwc_staging_login, 0);
 add_action('admin_init', $wwc_staging_login, 0);
 add_action('login_init', $wwc_staging_login, 0);
 
+// Cookie-Test und Iframe-Login: Pfad / + SameSite=None (HTTPS), sonst blockt Chrome den Test.
+add_action('login_init', static function (): void {
+    if (headers_sent()) {
+        return;
+    }
+    $name = defined('TEST_COOKIE') ? TEST_COOKIE : 'wordpress_test_cookie';
+    $secure = is_ssl();
+    setcookie($name, 'WP Cookie check', [
+        'expires' => 0,
+        'path' => '/',
+        'secure' => $secure,
+        'httponly' => false,
+        'samesite' => $secure ? 'None' : 'Lax',
+    ]);
+    $_COOKIE[$name] = 'WP Cookie check';
+}, 0);
+add_filter('wp_login_errors', static function ($errors) {
+    if ($errors instanceof WP_Error) {
+        $errors->remove('test_cookie');
+    }
+    return $errors;
+});
+$wwc_reissue_cookie = static function (string $name, string $value, int $expire): void {
+    if ($name === '' || headers_sent()) {
+        return;
+    }
+    $secure = is_ssl();
+    setcookie($name, $value, [
+        'expires' => $expire,
+        'path' => '/',
+        'secure' => $secure,
+        'httponly' => true,
+        'samesite' => $secure ? 'None' : 'Lax',
+    ]);
+};
+add_action('set_auth_cookie', static function ($cookie, $expire) use ($wwc_reissue_cookie): void {
+    $wwc_reissue_cookie(is_ssl() ? SECURE_AUTH_COOKIE : AUTH_COOKIE, (string) $cookie, (int) $expire);
+}, 10, 2);
+add_action('set_logged_in_cookie', static function ($cookie, $expire) use ($wwc_reissue_cookie): void {
+    $wwc_reissue_cookie(LOGGED_IN_COOKIE, (string) $cookie, (int) $expire);
+}, 10, 2);
+
 add_filter('user_has_cap', static function ($allcaps, $caps, $args, $user) {
     if (! is_array($allcaps)) {
         $allcaps = [];
@@ -876,28 +918,27 @@ PHP;
         }
         $contents = (string) file_get_contents($configPath);
         $home = rtrim(self::url(), '/').'/';
-        $cookiePath = parse_url($home, PHP_URL_PATH) ?: '/wp-content/wwc-staging/';
-        $cookiePath = '/'.trim((string) $cookiePath, '/').'/';
+        $hash = md5('wwc-stg-'.$home);
         $block = "define('WWC_STAGING_ENV', true);\n".
             "if (! defined('WP_HOME')) { define('WP_HOME', '".addcslashes($home, "\\'")."'); }\n".
             "if (! defined('WP_SITEURL')) { define('WP_SITEURL', '".addcslashes($home, "\\'")."'); }\n".
-            "if (! defined('COOKIEPATH')) { define('COOKIEPATH', '".addcslashes($cookiePath, "\\'")."'); }\n".
-            "if (! defined('SITECOOKIEPATH')) { define('SITECOOKIEPATH', '".addcslashes($cookiePath, "\\'")."'); }\n".
-            "if (! defined('ADMIN_COOKIE_PATH')) { define('ADMIN_COOKIE_PATH', '".addcslashes($cookiePath.'wp-admin', "\\'")."'); }\n".
-            "if (! defined('COOKIE_DOMAIN')) { define('COOKIE_DOMAIN', ''); }\n".
+            "if (! defined('COOKIEPATH')) { define('COOKIEPATH', '/'); }\n".
+            "if (! defined('SITECOOKIEPATH')) { define('SITECOOKIEPATH', '/'); }\n".
+            "if (! defined('ADMIN_COOKIE_PATH')) { define('ADMIN_COOKIE_PATH', '/'); }\n".
+            "if (! defined('COOKIEHASH')) { define('COOKIEHASH', '".$hash."'); }\n".
             "if (! defined('DISALLOW_FILE_EDIT')) { define('DISALLOW_FILE_EDIT', false); }\n".
             "if (! defined('DISALLOW_FILE_MODS')) { define('DISALLOW_FILE_MODS', false); }\n".
             "if (! defined('AUTOMATIC_UPDATER_DISABLED')) { define('AUTOMATIC_UPDATER_DISABLED', true); }\n";
 
-        if (! str_contains($contents, 'WWC_STAGING_ENV')) {
+        $contents = preg_replace(
+            "/if\s*\(\s*!\s*defined\(\s*'(COOKIEPATH|SITECOOKIEPATH|ADMIN_COOKIE_PATH|COOKIE_DOMAIN|COOKIEHASH)'\s*\)\s*\)\s*\{\s*define\(\s*'\\1'\s*,\s*'[^']*'\s*\);\s*\}\s*/",
+            '',
+            $contents
+        ) ?? $contents;
+        if (str_contains($contents, 'WWC_STAGING_ENV')) {
+            $contents = preg_replace("/define\('WWC_STAGING_ENV',\s*true\);\s*/", $block, $contents, 1) ?: $contents;
+        } else {
             $contents = preg_replace('/^<\?php\s*/', "<?php\n".$block, $contents, 1) ?: ("<?php\n".$block.$contents);
-        } elseif (! str_contains($contents, 'COOKIEPATH')) {
-            $contents = preg_replace(
-                "/define\('WWC_STAGING_ENV',\s*true\);\s*/",
-                $block,
-                $contents,
-                1
-            ) ?: $contents;
         }
         file_put_contents($configPath, $contents);
         WWC_Agent_Job_Progress::log('wp-config.php für Staging-Login angepasst', 76, false);

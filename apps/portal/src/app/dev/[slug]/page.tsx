@@ -127,6 +127,9 @@ export default function DevStagingPage() {
         </div>
       )}
 
+      <p className="muted" style={{ margin: "0 0 10px", fontSize: "0.85rem" }}>
+        Login und WP-Admin nur über <strong>WP-Admin öffnen</strong> (neuer Tab). Im Iframe blockiert der Browser Cookies.
+      </p>
       <div className="dev-frame-wrap">
         {st.exists && preview ? (
           <iframe title={`Staging ${data.site.name}`} src={preview} className="dev-frame" />
