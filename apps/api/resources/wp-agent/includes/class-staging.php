@@ -195,6 +195,9 @@ final class WWC_Agent_Staging
 
         $meta = json_decode((string) file_get_contents($metaFile), true) ?: [];
         $prefix = (string) ($meta['staging_prefix'] ?? 'wwcstg_');
+        $livePrefix = (string) ($meta['live_prefix'] ?? $wpdb->prefix);
+        self::rewrite_prefix_keys($livePrefix, $prefix, $prefix);
+        self::ensure_staging_wp_config();
         $username = 'wwc-dev';
         $password = wp_generate_password(20, true, true);
         $email = 'wwc-dev@'.wp_parse_url(home_url(), PHP_URL_HOST);
@@ -403,6 +406,23 @@ $wwc_staging_login = static function (): void {
 add_action('init', $wwc_staging_login, 0);
 add_action('admin_init', $wwc_staging_login, 0);
 add_action('login_init', $wwc_staging_login, 0);
+
+add_filter('user_has_cap', static function ($allcaps, $caps, $args, $user) {
+    if (! is_array($allcaps)) {
+        $allcaps = [];
+    }
+    if (! empty($allcaps['administrator']) || (isset($user->user_login) && $user->user_login === 'wwc-dev')) {
+        foreach ([
+            'manage_options', 'edit_posts', 'edit_pages', 'edit_others_posts', 'publish_posts',
+            'edit_theme_options', 'switch_themes', 'activate_plugins', 'install_plugins',
+            'update_plugins', 'update_themes', 'list_users', 'create_users', 'delete_users',
+        ] as $cap) {
+            $allcaps[$cap] = true;
+        }
+        $allcaps['administrator'] = true;
+    }
+    return $allcaps;
+}, 1, 4);
 
 // Always show admin bar for staging admins
 add_filter('show_admin_bar', static function ($show) {
@@ -674,6 +694,7 @@ PHP;
         $wpdb->update($stagePrefix.'options', ['option_value' => $home], ['option_name' => 'siteurl']);
         $wpdb->update($stagePrefix.'options', ['option_value' => $home], ['option_name' => 'home']);
         $wpdb->update($stagePrefix.'options', ['option_value' => '0'], ['option_name' => 'blog_public']);
+        self::rewrite_prefix_keys($prefix, $stagePrefix, $stagePrefix);
         WWC_Agent_Job_Progress::log('siteurl/home auf Staging-URL gesetzt');
 
         $config = $stagingPath.'/wp-config.php';
@@ -723,6 +744,7 @@ PHP;
             $wpdb->query("CREATE TABLE `{$liveTable}` LIKE `{$table}`");
             $wpdb->query("INSERT INTO `{$liveTable}` SELECT * FROM `{$table}`");
         }
+        self::rewrite_prefix_keys($stage, $live, $live);
         $home = home_url('/');
         $wpdb->update($live.'options', ['option_value' => $home], ['option_name' => 'siteurl']);
         $wpdb->update($live.'options', ['option_value' => $home], ['option_name' => 'home']);
@@ -812,6 +834,75 @@ PHP;
         return trailingslashit(WP_CONTENT_DIR).'wwc-backups/staging-work.json';
     }
 
+    /**
+     * Copied usermeta/options keep the live prefix (wp_capabilities, wp_user_roles).
+     * Staging uses wwcstg_ – without this rename nobody has an admin menu.
+     */
+    private static function rewrite_prefix_keys(string $fromPrefix, string $toPrefix, string $tablePrefix): void
+    {
+        global $wpdb;
+        $fromPrefix = preg_replace('/[^a-zA-Z0-9_]/', '', $fromPrefix) ?: '';
+        $toPrefix = preg_replace('/[^a-zA-Z0-9_]/', '', $toPrefix) ?: '';
+        $tablePrefix = preg_replace('/[^a-zA-Z0-9_]/', '', $tablePrefix) ?: '';
+        if ($fromPrefix === '' || $toPrefix === '' || $tablePrefix === '' || $fromPrefix === $toPrefix) {
+            return;
+        }
+
+        $options = $tablePrefix.'options';
+        $usermeta = $tablePrefix.'usermeta';
+        $oldRoles = $fromPrefix.'user_roles';
+        $newRoles = $toPrefix.'user_roles';
+        $wpdb->query($wpdb->prepare("DELETE FROM `{$options}` WHERE option_name = %s", $newRoles));
+        $wpdb->query($wpdb->prepare(
+            "UPDATE `{$options}` SET option_name = %s WHERE option_name = %s",
+            $newRoles,
+            $oldRoles
+        ));
+
+        $like = $wpdb->esc_like($fromPrefix).'%';
+        $wpdb->query($wpdb->prepare(
+            "UPDATE `{$usermeta}` SET meta_key = CONCAT(%s, SUBSTRING(meta_key, %d)) WHERE meta_key LIKE %s",
+            $toPrefix,
+            strlen($fromPrefix) + 1,
+            $like
+        ));
+    }
+
+    private static function ensure_staging_wp_config(): void
+    {
+        $configPath = self::path().'/wp-config.php';
+        if (! is_file($configPath)) {
+            return;
+        }
+        $contents = (string) file_get_contents($configPath);
+        $home = rtrim(self::url(), '/').'/';
+        $cookiePath = parse_url($home, PHP_URL_PATH) ?: '/wp-content/wwc-staging/';
+        $cookiePath = '/'.trim((string) $cookiePath, '/').'/';
+        $block = "define('WWC_STAGING_ENV', true);\n".
+            "if (! defined('WP_HOME')) { define('WP_HOME', '".addcslashes($home, "\\'")."'); }\n".
+            "if (! defined('WP_SITEURL')) { define('WP_SITEURL', '".addcslashes($home, "\\'")."'); }\n".
+            "if (! defined('COOKIEPATH')) { define('COOKIEPATH', '".addcslashes($cookiePath, "\\'")."'); }\n".
+            "if (! defined('SITECOOKIEPATH')) { define('SITECOOKIEPATH', '".addcslashes($cookiePath, "\\'")."'); }\n".
+            "if (! defined('ADMIN_COOKIE_PATH')) { define('ADMIN_COOKIE_PATH', '".addcslashes($cookiePath.'wp-admin', "\\'")."'); }\n".
+            "if (! defined('COOKIE_DOMAIN')) { define('COOKIE_DOMAIN', ''); }\n".
+            "if (! defined('DISALLOW_FILE_EDIT')) { define('DISALLOW_FILE_EDIT', false); }\n".
+            "if (! defined('DISALLOW_FILE_MODS')) { define('DISALLOW_FILE_MODS', false); }\n".
+            "if (! defined('AUTOMATIC_UPDATER_DISABLED')) { define('AUTOMATIC_UPDATER_DISABLED', true); }\n";
+
+        if (! str_contains($contents, 'WWC_STAGING_ENV')) {
+            $contents = preg_replace('/^<\?php\s*/', "<?php\n".$block, $contents, 1) ?: ("<?php\n".$block.$contents);
+        } elseif (! str_contains($contents, 'COOKIEPATH')) {
+            $contents = preg_replace(
+                "/define\('WWC_STAGING_ENV',\s*true\);\s*/",
+                $block,
+                $contents,
+                1
+            ) ?: $contents;
+        }
+        file_put_contents($configPath, $contents);
+        WWC_Agent_Job_Progress::log('wp-config.php für Staging-Login angepasst', 76, false);
+    }
+
     private static function slice_exhausted(float $started, int $budget): bool
     {
         $fromRequest = isset($_SERVER['REQUEST_TIME_FLOAT'])
@@ -843,22 +934,7 @@ PHP;
         file_put_contents($mu.'/wwc-staging-guard.php', self::staging_guard_plugin_source());
         WWC_Agent_Job_Progress::log('MU-Plugin Staging-Guard installiert');
 
-        $configPath = $dest.'/wp-config.php';
-        if (file_exists($configPath)) {
-            $prepend = "<?php\n".
-                "define('WWC_STAGING_ENV', true);\n".
-                "define('WP_HOME', '".addcslashes(self::url(), "\\'")."');\n".
-                "define('WP_SITEURL', '".addcslashes(self::url(), "\\'")."');\n".
-                "if (! defined('DISALLOW_FILE_EDIT')) { define('DISALLOW_FILE_EDIT', false); }\n".
-                "if (! defined('DISALLOW_FILE_MODS')) { define('DISALLOW_FILE_MODS', false); }\n".
-                "if (! defined('AUTOMATIC_UPDATER_DISABLED')) { define('AUTOMATIC_UPDATER_DISABLED', true); }\n";
-            $original = file_get_contents($configPath);
-            if (is_string($original) && ! str_contains($original, 'WWC_STAGING_ENV')) {
-                $original = preg_replace('/^<\?php\s*/', $prepend, $original, 1) ?: ($prepend.$original);
-                file_put_contents($configPath, $original);
-                WWC_Agent_Job_Progress::log('wp-config.php für Staging-URLs angepasst', 76);
-            }
-        }
+        self::ensure_staging_wp_config();
 
         return ['ok' => true];
     }

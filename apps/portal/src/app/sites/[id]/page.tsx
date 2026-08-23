@@ -582,6 +582,8 @@ export default function SiteDetailPage() {
   const staging = site.health?.staging;
   const stagingReady = Boolean(staging?.exists || stagingPortal?.exists || stagingPortal?.ready_at);
   const stagingPreview = stagingPortal?.preview_url || staging?.url || (site.url ? `${site.url.replace(/\/$/, "")}/wp-content/wwc-staging/` : null);
+  const stagingAdmin = stagingPortal?.admin_login_url
+    || (stagingPreview ? `${stagingPreview.replace(/\/$/, "")}/wp-admin/` : null);
   const updates =
     (site.inventory?.core?.update_available ? 1 : 0) +
     plugins.filter((p) => p.update_available).length +
@@ -1817,8 +1819,8 @@ export default function SiteDetailPage() {
                 )}
               </div>
               <div className="row">
-                {stagingPortal?.admin_login_url && (
-                  <a className="btn" href={stagingPortal.admin_login_url} target="_blank" rel="noreferrer">
+                {stagingAdmin && (
+                  <a className="btn" href={stagingAdmin} target="_blank" rel="noreferrer">
                     WP-Admin öffnen
                   </a>
                 )}
