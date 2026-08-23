@@ -9,6 +9,7 @@ import { ProcessBar, ProcessList } from "@/components/ProcessBar";
 import { Flash, PageHeader, Tabs } from "@/components/ui";
 import { api, downloadSiteBackup } from "@/lib/api";
 import { publicPortalHref } from "@/lib/staging";
+import { ContentStudio } from "@/components/ContentStudio";
 
 type Backup = {
   id: string;
@@ -168,6 +169,14 @@ type SiteDetail = {
   };
   server_backups?: ServerBackup[];
   dev_clone?: DevClone | null;
+  content_studio?: {
+    intel?: Record<string, unknown> | null;
+    intel_source?: string | null;
+    scanned_at?: string | null;
+    draft?: Record<string, unknown> | null;
+    clone_ready?: boolean;
+    clone_url?: string | null;
+  } | null;
   staging_portal?: StagingPortal;
   events: Array<{
     id: string;
@@ -747,6 +756,7 @@ export default function SiteDetailPage() {
           { id: "backups", label: "Backups" },
           { id: "hardening", label: "Sicherheit" },
           { id: "staging", label: "Development" },
+          { id: "editor", label: "KI-Editor" },
           { id: "activity", label: "Aktivität" },
         ]}
       />
@@ -2000,6 +2010,14 @@ export default function SiteDetailPage() {
           )}
         </div>
         </>
+      )}
+
+      {tab === "editor" && (
+        <ContentStudio
+          siteId={params.id as string}
+          initial={detail.content_studio}
+          onRefresh={async () => { await load(); }}
+        />
       )}
 
       {tab === "activity" && (

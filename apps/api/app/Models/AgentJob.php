@@ -35,6 +35,8 @@ class AgentJob extends Model
         'staging_grant_admin',
         'security_harden',
         'security_status',
+        'site_scan',
+        'content_apply',
     ];
 
     protected $fillable = [

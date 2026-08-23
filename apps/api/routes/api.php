@@ -103,6 +103,14 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'create']);
     Route::post('/sites/{id}/dev-clone/dry-run', [\App\Http\Controllers\Api\DevCloneController::class, 'dryRun']);
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
+    Route::get('/sites/{id}/content-studio', [\App\Http\Controllers\Api\ContentStudioController::class, 'show']);
+    Route::post('/sites/{id}/content-studio/scan', [\App\Http\Controllers\Api\ContentStudioController::class, 'scan']);
+    Route::post('/sites/{id}/content-studio/plan', [\App\Http\Controllers\Api\ContentStudioController::class, 'plan']);
+    Route::post('/sites/{id}/content-studio/apply-dev', [\App\Http\Controllers\Api\ContentStudioController::class, 'applyDev']);
+    Route::post('/sites/{id}/content-studio/promote', [\App\Http\Controllers\Api\ContentStudioController::class, 'promote']);
+    Route::post('/sites/{id}/content-studio/upload', [\App\Http\Controllers\Api\ContentStudioController::class, 'upload']);
+    Route::get('/mcp/tools', [\App\Http\Controllers\Api\McpController::class, 'tools']);
+    Route::post('/mcp/call', [\App\Http\Controllers\Api\McpController::class, 'call']);
     Route::get('/sites/{siteId}/backups/latest/download', [BackupController::class, 'downloadLatest']);
     Route::get('/sites/{siteId}/backups/{backupId}/download', [BackupController::class, 'download']);
     Route::delete('/sites/{siteId}/backups/{backupId}', [BackupController::class, 'destroy']);

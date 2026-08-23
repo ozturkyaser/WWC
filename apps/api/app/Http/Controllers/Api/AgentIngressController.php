@@ -264,6 +264,17 @@ class AgentIngressController extends Controller
             $data['result'] ?? null
         );
 
+        if ($data['status'] === 'completed' && $job->command === 'site_scan' && is_array($data['result'] ?? null)) {
+            app(\App\Services\ContentStudioService::class)->rememberScanResult($site->fresh() ?? $site, $data['result']);
+        }
+        if (in_array($job->command, ['content_apply'], true) && in_array($data['status'], ['completed', 'failed'], true)) {
+            app(\App\Services\ContentStudioService::class)->rememberApplyResult(
+                $site->fresh() ?? $site,
+                is_array($data['result'] ?? null) ? $data['result'] : [],
+                $data['status'] === 'completed' && (($data['result']['ok'] ?? true) !== false)
+            );
+        }
+
         if ($data['status'] === 'completed' && in_array($job->command, ['update_plugin', 'update_theme', 'update_core'], true)) {
             $findingId = $job->payload['finding_id'] ?? null;
             if ($findingId) {

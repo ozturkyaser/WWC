@@ -131,6 +131,7 @@ class SiteController extends Controller
             'maintenance' => $maintenance->payloadForSite($site),
             'server_backups' => $serverBackups,
             'dev_clone' => app(\App\Services\DevCloneService::class)->payload($site),
+            'content_studio' => app(\App\Services\ContentStudioService::class)->payload($site),
             'agent_synced' => is_array($site->inventory) && $site->inventory !== [],
         ]);
     }

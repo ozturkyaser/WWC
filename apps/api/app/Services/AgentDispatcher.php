@@ -59,7 +59,7 @@ class AgentDispatcher
     {
         return in_array($command, [
             'update_plugin', 'update_theme', 'update_core', 'update_batch',
-            'staging_promote', 'restore_backup',
+            'staging_promote', 'restore_backup', 'content_apply',
         ], true);
     }
 }

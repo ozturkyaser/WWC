@@ -112,6 +112,7 @@ class DevCloneService
             $tablePrefix = $this->detectTablePrefix($dir.'/html/wp-config.php');
             $this->writeCloneWpConfig($dir, $tablePrefix, $cloneUrl);
             $this->writeGuardMuPlugin($dir);
+            $this->installIntelOnClone($site);
             $this->writeComposeFile($dir, $site, $port, $phpImage);
 
             // 3. Erst NUR die Datenbank starten (importiert database.sql beim ersten Start).
@@ -629,6 +630,115 @@ YAML;
     // ---------------------------------------------------------------
     // Pfade, Ports, Status
     // ---------------------------------------------------------------
+
+    public function isReady(Site $site): bool
+    {
+        return ($site->dev_clone['status'] ?? '') === 'ready';
+    }
+
+    public function installIntelOnClone(Site $site): void
+    {
+        $dir = $this->cloneDir($site);
+        $mu = $dir.'/html/wp-content/mu-plugins';
+        if (! is_dir($mu) && ! @mkdir($mu, 0755, true) && ! is_dir($mu)) {
+            throw new RuntimeException('mu-plugins im Clone nicht schreibbar.');
+        }
+        $src = $this->intelLibPath();
+        copy($src, $mu.'/wwc-site-intel-lib.php');
+        file_put_contents($mu.'/wwc-site-intel.php', <<<'PHP'
+<?php
+/**
+ * Plugin Name: WWC Site Intel
+ * Description: Scan und Content-Apply für die isolierte Dev-Kopie.
+ */
+if (! class_exists('WWC_Agent_Site_Intel')) {
+    require_once __DIR__ . '/wwc-site-intel-lib.php';
+}
+PHP);
+        file_put_contents($mu.'/wwc-intel-run.php', <<<'PHP'
+<?php
+if (! class_exists('WWC_Agent_Site_Intel')) {
+    require_once __DIR__ . '/wwc-site-intel-lib.php';
+}
+$mode = (isset($args[0]) && is_string($args[0])) ? $args[0] : 'scan';
+if ($mode === 'apply') {
+    $ops = json_decode((string) file_get_contents(WP_CONTENT_DIR . '/wwc-content-ops.json'), true);
+    echo json_encode(WWC_Agent_Site_Intel::apply(is_array($ops) ? $ops : []));
+    return;
+}
+echo json_encode(WWC_Agent_Site_Intel::scan());
+PHP);
+    }
+
+    public function scanClone(Site $site): array
+    {
+        $this->installIntelOnClone($site);
+        $out = $this->wp(
+            $this->cloneDir($site),
+            $this->projectName($site),
+            ['eval-file', '/var/www/html/wp-content/mu-plugins/wwc-intel-run.php', 'scan']
+        );
+        $json = json_decode(trim($out), true);
+        if (! is_array($json) || empty($json['ok'])) {
+            throw new RuntimeException('Clone-Scan fehlgeschlagen: '.mb_substr(trim($out), 0, 240));
+        }
+
+        return $json;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $ops
+     * @return array{ok:bool,results:list<array>}
+     */
+    public function applyOnClone(Site $site, array $ops): array
+    {
+        $this->installIntelOnClone($site);
+        $dir = $this->cloneDir($site);
+        $opsPath = $dir.'/html/wp-content/wwc-content-ops.json';
+        file_put_contents($opsPath, json_encode($ops, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        try {
+            $out = $this->wp($dir, $this->projectName($site), [
+                'eval-file', '/var/www/html/wp-content/mu-plugins/wwc-intel-run.php', 'apply',
+            ]);
+        } finally {
+            @unlink($opsPath);
+        }
+        $json = json_decode(trim($out), true);
+        if (! is_array($json)) {
+            throw new RuntimeException('Clone-Apply fehlgeschlagen: '.mb_substr(trim($out), 0, 240));
+        }
+
+        return $json;
+    }
+
+    public function placeCloneUpload(Site $site, string $absolutePath, string $filename): string
+    {
+        $safe = preg_replace('/[^a-zA-Z0-9._-]/', '', $filename) ?: 'upload.bin';
+        $dir = $this->cloneDir($site).'/html/wp-content/uploads/wwc-in';
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Upload-Ordner im Clone nicht schreibbar.');
+        }
+        $target = $dir.'/'.$safe;
+        if (! copy($absolutePath, $target)) {
+            throw new RuntimeException('Datei konnte nicht in die Dev-Kopie kopiert werden.');
+        }
+
+        return '/var/www/html/wp-content/uploads/wwc-in/'.$safe;
+    }
+
+    private function intelLibPath(): string
+    {
+        foreach ([
+            rtrim((string) config('wwc.repo_path'), '/').'/packages/wp-agent/includes/class-site-intel.php',
+            base_path('resources/wp-agent/includes/class-site-intel.php'),
+        ] as $path) {
+            if (is_file($path)) {
+                return $path;
+            }
+        }
+
+        throw new RuntimeException('Site-Intel-Bibliothek fehlt auf dem Server.');
+    }
 
     public function cloneDir(Site $site): string
     {

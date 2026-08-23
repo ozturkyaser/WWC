@@ -43,7 +43,17 @@ final class WWC_Agent_Rest
                 'callback' => [self::class, 'list_backup_parts'],
                 'permission_callback' => [self::class, 'authorize'],
             ]);
+            register_rest_route('wwc/v1', '/site-map', [
+                'methods' => 'GET',
+                'callback' => [self::class, 'site_map'],
+                'permission_callback' => [self::class, 'authorize'],
+            ]);
         });
+    }
+
+    public static function site_map(): WP_REST_Response
+    {
+        return new WP_REST_Response(WWC_Agent_Site_Intel::scan());
     }
 
     public static function discard_stray_output($served, $result, $request, $server)
@@ -225,6 +235,7 @@ final class WWC_Agent_Rest
             'staging_create', 'staging_destroy', 'staging_status', 'staging_grant_admin',
             'staging_update_plugin', 'staging_update_theme', 'update_batch', 'staging_promote',
             'security_harden', 'security_status',
+            'site_scan', 'content_apply',
         ];
         if (! in_array($command, $allowed, true)) {
             return new WP_REST_Response(['ok' => false, 'error' => 'Command not allowed'], 400);
@@ -249,6 +260,8 @@ final class WWC_Agent_Rest
                 'ping' => ['ok' => true],
                 'security_harden' => WWC_Agent_Hardening::apply($payload),
                 'security_status' => ['ok' => true, 'status' => WWC_Agent_Hardening::status()],
+                'site_scan' => WWC_Agent_Site_Intel::scan(),
+                'content_apply' => WWC_Agent_Site_Intel::apply(is_array($payload['ops'] ?? null) ? $payload['ops'] : []),
                 'purge_wwc' => WWC_Agent_Backup::purge_managed(),
                 'delete_backup' => WWC_Agent_Backup::delete((string) ($payload['backup_id'] ?? '')),
                 'list_backups' => WWC_Agent_Backup::list(),

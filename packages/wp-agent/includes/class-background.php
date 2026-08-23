@@ -36,6 +36,8 @@ final class WWC_Agent_Background
             'list_backups',
             'staging_status',
             'delete_backup',
+            'site_scan',
+            'content_apply',
         ], true);
     }
 
@@ -265,6 +267,8 @@ final class WWC_Agent_Background
                 'staging_grant_admin' => WWC_Agent_Staging::grant_admin_access(),
                 'delete_backup' => WWC_Agent_Backup::delete((string) ($payload['backup_id'] ?? '')),
                 'purge_wwc' => WWC_Agent_Backup::purge_managed(),
+                'site_scan' => WWC_Agent_Site_Intel::scan(),
+                'content_apply' => WWC_Agent_Site_Intel::apply(is_array($payload['ops'] ?? null) ? $payload['ops'] : []),
                 default => ['ok' => false, 'error' => 'Unknown command'],
             };
 
