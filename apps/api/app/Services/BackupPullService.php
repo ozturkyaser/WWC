@@ -61,8 +61,9 @@ class BackupPullService
                 $onProgress && $onProgress(sprintf('Backup %d/%d schon vorhanden: %s', $i + 1, $total, $name));
                 continue;
             }
-            $onProgress && $onProgress(sprintf('Backup vom Kundenserver holen %d/%d: %s', $i + 1, $total, $name));
-            $this->agent->downloadBackupPartTo($site, $backupId, $name, $target);
+            $label = sprintf('Backup vom Kundenserver holen %d/%d: %s', $i + 1, $total, $name);
+            $onProgress && $onProgress($label);
+            $this->downloadWithRetry($site, $backupId, $name, $target, $expected, $label, $onProgress);
             if ($expected > 0 && (int) filesize($target) !== $expected) {
                 @unlink($target);
                 throw new RuntimeException("Größe von {$name} stimmt nicht.");
@@ -93,5 +94,63 @@ class BackupPullService
         );
 
         return $record->fresh() ?? $record;
+    }
+
+    /**
+     * @param  (callable(string): void)|null  $onProgress
+     */
+    private function downloadWithRetry(
+        Site $site,
+        string $backupId,
+        string $name,
+        string $target,
+        int $expected,
+        string $label,
+        ?callable $onProgress
+    ): void {
+        $last = null;
+        for ($attempt = 1; $attempt <= 4; $attempt++) {
+            try {
+                $this->agent->downloadBackupPartTo(
+                    $site,
+                    $backupId,
+                    $name,
+                    $target,
+                    function (int $have, int $total) use ($onProgress, $label): void {
+                        if ($onProgress === null) {
+                            return;
+                        }
+                        if ($total > 0) {
+                            $onProgress(sprintf('%s – %s / %s', $label, self::bytes($have), self::bytes($total)));
+                        } else {
+                            $onProgress(sprintf('%s – %s', $label, self::bytes($have)));
+                        }
+                    },
+                    $expected
+                );
+
+                return;
+            } catch (\Throwable $e) {
+                $last = $e;
+                $onProgress && $onProgress(sprintf('%s – Versuch %d/4 fehlgeschlagen, wiederhole…', $label, $attempt));
+                if ($attempt < 4) {
+                    sleep(min(10, $attempt * 2));
+                }
+            }
+        }
+
+        throw new RuntimeException($last?->getMessage() ?: "Download von {$name} fehlgeschlagen.");
+    }
+
+    private static function bytes(int $n): string
+    {
+        if ($n < 1024) {
+            return $n.' B';
+        }
+        if ($n < 1048576) {
+            return sprintf('%.1f KB', $n / 1024);
+        }
+
+        return sprintf('%.1f MB', $n / 1048576);
     }
 }

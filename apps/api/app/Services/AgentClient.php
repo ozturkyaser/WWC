@@ -128,50 +128,118 @@ class AgentClient
         return $data;
     }
 
-    public function downloadBackupPartTo(Site $site, string $backupId, string $name, string $target): void
+    /**
+     * @param  (callable(int $have, int $total): void)|null  $onBytes
+     */
+    public function downloadBackupPartTo(Site $site, string $backupId, string $name, string $target, ?callable $onBytes = null, int $expected = 0): void
     {
         $name = basename($name);
         $path = '/wp-json/wwc/v1/backups/'.rawurlencode($backupId).'/parts/'.rawurlencode($name);
-        $this->signedDownload($site, $path, $target, 600);
+        $this->signedDownload($site, $path, $target, 600, $onBytes, $expected);
     }
 
-    private function signedDownload(Site $site, string $path, string $target, int $timeout = 600): void
-    {
+    /**
+     * @param  (callable(int $have, int $total): void)|null  $onBytes
+     */
+    private function signedDownload(
+        Site $site,
+        string $path,
+        string $target,
+        int $timeout = 180,
+        ?callable $onBytes = null,
+        int $expected = 0
+    ): void {
         $secret = $site->getHmacSecret();
         if (! $secret) {
             throw new RuntimeException('Site is not paired.');
+        }
+
+        $tmp = $target.'.dl';
+        @mkdir(dirname($target), 0755, true);
+        $have = is_file($tmp) ? (int) filesize($tmp) : 0;
+        if ($expected > 0 && $have > $expected) {
+            @unlink($tmp);
+            $have = 0;
         }
 
         $timestamp = (string) time();
         $nonce = Str::random(32);
         $signature = HmacSigner::sign('GET', $path, $timestamp, $nonce, '', $secret);
         $url = rtrim($site->url, '/').$path;
-        $tmp = $target.'.dl';
-        @mkdir(dirname($target), 0755, true);
+        $headers = [
+            'X-WWC-Timestamp' => $timestamp,
+            'X-WWC-Nonce' => $nonce,
+            'X-WWC-Key-Id' => $site->key_id ?? 'primary',
+            'X-WWC-Signature' => $signature,
+            'Accept' => 'application/octet-stream',
+            'Content-Type' => 'application/json',
+        ];
+        if ($have > 0) {
+            $headers['Range'] = 'bytes='.$have.'-';
+        }
 
-        $response = Http::timeout($timeout)
-            ->connectTimeout(15)
-            ->sink($tmp)
-            ->withHeaders([
-                'X-WWC-Timestamp' => $timestamp,
-                'X-WWC-Nonce' => $nonce,
-                'X-WWC-Key-Id' => $site->key_id ?? 'primary',
-                'X-WWC-Signature' => $signature,
-                'Accept' => 'application/octet-stream',
-                'Content-Type' => 'application/json',
+        $lastTick = 0;
+        $rangeFile = $tmp.'.part';
+        $pending = Http::timeout($timeout)
+            ->connectTimeout(20)
+            ->sink($rangeFile)
+            ->withOptions([
+                'curl' => [
+                    CURLOPT_LOW_SPEED_LIMIT => 1024,
+                    CURLOPT_LOW_SPEED_TIME => 40,
+                ],
+                'progress' => function (int $downloadTotal, int $downloaded) use ($onBytes, $have, $expected, &$lastTick): void {
+                    if ($onBytes === null) {
+                        return;
+                    }
+                    $now = time();
+                    if ($now === $lastTick) {
+                        return;
+                    }
+                    $lastTick = $now;
+                    $total = $expected > 0 ? $expected : ($downloadTotal > 0 ? $have + $downloadTotal : 0);
+                    $onBytes($have + $downloaded, $total);
+                },
             ])
-            ->get($url);
+            ->withHeaders($headers);
+
+        $response = $pending->get($url);
 
         if (! $response->successful()) {
-            @unlink($tmp);
+            @unlink($rangeFile);
+            if ($response->status() === 416) {
+                @unlink($tmp);
+            }
             $hint = $response->status() === 404
                 ? 'Agent unterstützt das Holen mehrteiliger Backups nicht (mind. 0.6.20). Bitte Agent aktualisieren.'
                 : 'Backup-Teil fehlgeschlagen: HTTP '.$response->status();
             throw new RuntimeException($hint);
         }
 
-        if (! is_file($tmp) || ! rename($tmp, $target)) {
+        if (! is_file($rangeFile)) {
+            throw new RuntimeException('Backup-Teil konnte nicht gespeichert werden.');
+        }
+
+        if ($response->status() === 206 && $have > 0 && is_file($tmp)) {
+            $append = fopen($tmp, 'ab');
+            $src = fopen($rangeFile, 'rb');
+            if ($append === false || $src === false) {
+                @unlink($rangeFile);
+                throw new RuntimeException('Backup-Teil konnte nicht zusammengesetzt werden.');
+            }
+            stream_copy_to_stream($src, $append);
+            fclose($src);
+            fclose($append);
+            @unlink($rangeFile);
+        } else {
             @unlink($tmp);
+            if (! rename($rangeFile, $tmp)) {
+                @unlink($rangeFile);
+                throw new RuntimeException('Backup-Teil konnte nicht gespeichert werden.');
+            }
+        }
+
+        if (! is_file($tmp) || ! rename($tmp, $target)) {
             throw new RuntimeException('Backup-Teil konnte nicht gespeichert werden.');
         }
     }

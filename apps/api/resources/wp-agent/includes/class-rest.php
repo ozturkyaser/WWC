@@ -136,13 +136,61 @@ final class WWC_Agent_Rest
             $mime = 'application/sql';
         }
 
+        @ini_set('zlib.output_compression', '0');
+        @ini_set('output_buffering', '0');
+        @set_time_limit(0);
+        ignore_user_abort(true);
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        $size = (int) filesize($path);
+        $start = 0;
+        $end = $size > 0 ? $size - 1 : 0;
+        $range = (string) ($_SERVER['HTTP_RANGE'] ?? '');
+        if ($range !== '' && preg_match('/bytes=(\d+)-(\d*)/', $range, $m) === 1) {
+            $start = (int) $m[1];
+            if ($m[2] !== '') {
+                $end = min($end, (int) $m[2]);
+            }
+            if ($start < 0 || $start > $end) {
+                return new WP_Error('wwc_backup', 'Ungültiger Range', ['status' => 416]);
+            }
+        }
+
         nocache_headers();
         header('Content-Type: '.$mime);
         header('Content-Disposition: attachment; filename="'.$name.'"');
-        header('Content-Length: '.(string) filesize($path));
+        header('Accept-Ranges: bytes');
         header('X-WWC-Backup-Id: '.(string) $part['backup_id']);
         header('X-WWC-Part-Name: '.$name);
-        readfile($path);
+        $length = $end - $start + 1;
+        if ($start > 0) {
+            header('HTTP/1.1 206 Partial Content');
+            header('Content-Range: bytes '.$start.'-'.$end.'/'.$size);
+        }
+        header('Content-Length: '.(string) max(0, $length));
+
+        $fh = fopen($path, 'rb');
+        if ($fh === false) {
+            return new WP_Error('wwc_backup', 'Datei nicht lesbar', ['status' => 404]);
+        }
+        if ($start > 0) {
+            fseek($fh, $start);
+        }
+        $sent = 0;
+        while ($sent < $length && ! feof($fh)) {
+            $chunk = fread($fh, min(262144, $length - $sent));
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            echo $chunk;
+            $sent += strlen($chunk);
+            if (function_exists('flush')) {
+                flush();
+            }
+        }
+        fclose($fh);
         exit;
     }
 

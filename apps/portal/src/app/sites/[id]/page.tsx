@@ -351,7 +351,10 @@ export default function SiteDetailPage() {
     const hasUpdateJobs = (detail?.active_jobs || []).some((j) =>
       /update|dry-run|multi/i.test(String(j.command || j.progress_ui?.title || ""))
     );
-    const interval = tab === "updates" || hasUpdateJobs ? 2500 : 6000;
+    const interval =
+      tab === "updates" || tab === "staging" || hasUpdateJobs || detail?.dev_clone?.status === "building"
+        ? 2500
+        : 6000;
     const t = setInterval(() => load().catch(() => undefined), interval);
     return () => clearInterval(t);
   }, [params.id, tab, detail?.active_jobs?.length]);
