@@ -302,7 +302,7 @@ final class WWC_Agent_Backup
                 }
                 continue;
             }
-            if (($work['phase'] ?? '') === 'finish') {
+            if (($work['phase'] ?? '') === 'finish' || ($work['phase'] ?? '') === 'offsite') {
                 $result = self::finish_full($work);
                 self::clear_work($jobId);
 
@@ -388,8 +388,7 @@ final class WWC_Agent_Backup
         return $dir !== ''
             && is_dir($dir)
             && str_starts_with($id, 'full-')
-            && in_array($phase, ['db', 'scan', 'zip', 'finish'], true)
-            && ! is_file($dir.'/manifest.json');
+            && in_array($phase, ['db', 'scan', 'zip', 'finish', 'offsite'], true);
     }
 
     private static function discard_unfinished_work(): void
@@ -425,8 +424,7 @@ final class WWC_Agent_Backup
         }
 
         @set_time_limit(600);
-        $parentManifest = json_decode((string) file_get_contents(self::root().'/'.$parent['id'].'/manifest.json'), true);
-        $oldFiles = is_array($parentManifest['files'] ?? null) ? $parentManifest['files'] : [];
+        $oldFiles = self::backup_filemap((string) $parent['id']);
         $current = self::build_file_map(self::settings($options));
         $changed = [];
         foreach ($current as $rel => $meta) {
@@ -508,12 +506,32 @@ final class WWC_Agent_Backup
         return null;
     }
 
+    /**
+     * @return array<string, array{hash:string,mtime:int,size:int}>
+     */
+    private static function backup_filemap(string $backupId): array
+    {
+        $dir = self::root().'/'.$backupId;
+        $map = self::read_json_file($dir.'/filemap.json');
+        if (is_array($map) && $map !== []) {
+            return $map;
+        }
+        $manifest = self::read_json_file($dir.'/manifest.json') ?? [];
+
+        return is_array($manifest['files'] ?? null) ? $manifest['files'] : [];
+    }
+
     public static function ensure_export(string $backupId): array
     {
         $backupId = self::sanitize_id($backupId);
         $dir = self::root().'/'.$backupId;
         if (! is_dir($dir) || ! file_exists($dir.'/manifest.json')) {
             return ['ok' => false, 'error' => 'Backup not found'];
+        }
+
+        $archives = self::list_file_archives($dir);
+        if (count($archives) > 1) {
+            return ['ok' => false, 'error' => 'Mehrteiliges Backup – kein einzelnes Export-Zip'];
         }
 
         $export = $dir.'/wwc-export.zip';
@@ -1556,12 +1574,18 @@ final class WWC_Agent_Backup
         $part = max(1, (int) ($work['zip_part'] ?? 1));
         $file = self::zip_part_file($dir, $part);
         $size = is_file($file) ? (int) filesize($file) : 0;
-        if ($size >= self::ZIP_SPLIT_BYTES) {
+        $rotated = false;
+        while ($size >= self::ZIP_SPLIT_BYTES) {
             $part++;
-            $work['zip_part'] = $part;
-            $work['zip_part_from'] = $from;
             $file = self::zip_part_file($dir, $part);
-            $size = 0;
+            $size = is_file($file) ? (int) filesize($file) : 0;
+            $rotated = true;
+        }
+        if ($rotated) {
+            $work['zip_part'] = $part;
+            if ($size === 0) {
+                $work['zip_part_from'] = $from;
+            }
             WWC_Agent_Job_Progress::log(
                 'ZIP-Teil '.$part.' (max 80 MB, wie UpdraftPlus)',
                 (int) ($work['percent'] ?? 50),
@@ -1845,44 +1869,63 @@ final class WWC_Agent_Backup
         $fileMap = self::read_json_file($dir.'/filemap.json') ?? [];
         $skipped = is_array($work['skipped'] ?? null) ? $work['skipped'] : ['count' => 0, 'bytes' => 0];
         $fileCount = count($fileMap);
+        if ($fileCount === 0) {
+            $fileCount = (int) ($work['file_count'] ?? 0);
+        }
 
-        WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
         $archives = self::list_file_archives($dir);
         if ($archives === []) {
             $archives = ['files.zip'];
         }
-        $manifest = [
-            'id' => $id,
-            'type' => 'full',
-            'label' => $label,
-            'created_at' => gmdate('c'),
-            'wp_version' => get_bloginfo('version'),
-            'site_url' => home_url('/'),
-            'parent_id' => null,
-            'file_count' => $fileCount,
-            'files' => $fileMap,
-            'database' => 'database.sql',
-            'archive' => $archives[0],
-            'archives' => $archives,
-            'skipped' => ['count' => (int) ($skipped['count'] ?? 0), 'bytes' => (int) ($skipped['bytes'] ?? 0)],
-            'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
-        ];
-        file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
-        @unlink($dir.'/work.json');
-        @unlink($dir.'/filemap.json');
-        $sizeBytes = self::dir_size($dir);
+        if (! is_file($dir.'/manifest.json')) {
+            WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
+            $manifest = [
+                'id' => $id,
+                'type' => 'full',
+                'label' => $label,
+                'created_at' => gmdate('c'),
+                'wp_version' => get_bloginfo('version'),
+                'site_url' => home_url('/'),
+                'parent_id' => null,
+                'file_count' => $fileCount,
+                'filemap' => 'filemap.json',
+                'database' => 'database.sql',
+                'archive' => $archives[0],
+                'archives' => $archives,
+                'skipped' => ['count' => (int) ($skipped['count'] ?? 0), 'bytes' => (int) ($skipped['bytes'] ?? 0)],
+                'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
+            ];
+            file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
+        } else {
+            WWC_Agent_Job_Progress::report(90, 'Manifest vorhanden, Abschluss…', true);
+            $manifest = self::read_json_file($dir.'/manifest.json') ?? [
+                'id' => $id,
+                'type' => 'full',
+                'label' => $label,
+                'created_at' => gmdate('c'),
+            ];
+        }
+        // Keep filemap.json for incrementals – do not embed 47k hashes in manifest.json.
+        unset($fileMap);
+        $sizeBytes = 0;
+        foreach (array_merge($archives, ['database.sql', 'filemap.json', 'manifest.json']) as $name) {
+            if (is_file($dir.'/'.$name)) {
+                $sizeBytes += (int) filesize($dir.'/'.$name);
+            }
+        }
 
         WWC_Agent_Event_Queue::push('backup_created', 'Full backup '.$id, 'info', ['id' => $id, 'type' => 'full']);
 
         $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
         if (! ($offsite['ok'] ?? false)) {
-            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'), 96, true);
-            WWC_Agent_Event_Queue::push('backup_offsite_failed', 'Off-site upload failed for '.$id, 'warning', [
+            WWC_Agent_Job_Progress::log('Off-site-Upload übersprungen (Backup bleibt lokal): '.($offsite['error'] ?? '?'), 96, true);
+            WWC_Agent_Event_Queue::push('backup_offsite_failed', 'Off-site upload skipped for '.$id, 'warning', [
                 'id' => $id,
                 'error' => $offsite['error'] ?? null,
             ]);
         }
-        WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt', true);
+        @unlink($dir.'/work.json');
+        WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt ('.count($archives).' ZIP-Teile)', true);
 
         return [
             'ok' => true,

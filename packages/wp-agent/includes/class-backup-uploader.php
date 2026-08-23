@@ -22,6 +22,21 @@ final class WWC_Agent_Backup_Uploader
             return ['ok' => false, 'error' => 'Agent nicht gepairt'];
         }
 
+        $dir = WWC_Agent_Backup::root().'/'.$backupId;
+        $archives = WWC_Agent_Backup::list_file_archives($dir);
+        $payload = 0;
+        foreach (array_merge($archives, ['database.sql', 'changed.zip']) as $name) {
+            if (is_file($dir.'/'.$name)) {
+                $payload += (int) filesize($dir.'/'.$name);
+            }
+        }
+        if (count($archives) > 1 || $payload > 200 * 1024 * 1024) {
+            return [
+                'ok' => false,
+                'error' => count($archives).' ZIP-Teile / '.self::format_bytes($payload).' – bleibt lokal, kein 7-GB-Export-Zip',
+            ];
+        }
+
         $export = WWC_Agent_Backup::ensure_export($backupId);
         if (! ($export['ok'] ?? false)) {
             return $export;
