@@ -1935,10 +1935,14 @@ export default function SiteDetailPage() {
         </div>
 
         <div className="surface surface-pad" style={{ marginTop: 18 }}>
-          <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>Staging auf der Kundenseite</h4>
+          <h4 style={{ marginTop: 0, fontSize: "0.95rem" }}>
+            Staging auf der Kundenseite <span className="badge warn" style={{ marginLeft: 8 }}>nicht isoliert</span>
+          </h4>
           <p className="muted" style={{ marginTop: 0 }}>
-            Liegt auf dem Kundenhost (z. B. unter <code>/wp-content/wwc-staging/</code>).
-            Nur nötig, wenn die Kopie dort bleiben soll – für isolierte Änderungen den Bereich oben nutzen.
+            Das ist <strong>kein</strong> isolierter Bereich: Es liegt auf dem Kundenhost
+            (<code>/wp-content/wwc-staging/</code>), teilt sich PHP, Platte, CPU und oft die Datenbank mit Live.
+            Fehler, Last und volle Disk treffen die Live-Site. Für echte Isolation den Block oben
+            (WWC-Server / Proxmox) nutzen. Dieses Staging kannst du löschen, wenn du es nicht brauchst.
           </p>
           {stagingReady ? (
             <>
