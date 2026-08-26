@@ -117,12 +117,19 @@ class DevCloneService
 
             $chain = $this->backupChain($site, $backup);
             $dir = $this->cloneDir($site);
-            $this->resetDirectory($dir);
-
-            // 1. Dateien aus der Backup-Kette extrahieren (voll, dann inkrementell darueber)
+            $reuseFiles = is_file($dir.'/html/wp-settings.php') && is_file($dir.'/database.sql');
             $manifest = [];
-            foreach ($chain as $i => $step) {
-                $manifest = $this->extractArchive($step, $dir, $i === 0) ?: $manifest;
+            if ($reuseFiles) {
+                $this->setState($site, ['status' => 'building', 'message' => 'Vorhandene Dateien nutzen, Datenbank neu aufsetzen…', 'error' => null]);
+                $manifestFile = rtrim((string) $backup->storage_path, '/').'/manifest.json';
+                if (is_file($manifestFile)) {
+                    $manifest = json_decode((string) file_get_contents($manifestFile), true) ?: [];
+                }
+            } else {
+                $this->resetDirectory($dir);
+                foreach ($chain as $i => $step) {
+                    $manifest = $this->extractArchive($step, $dir, $i === 0) ?: $manifest;
+                }
             }
 
             // 2. Laufzeit konfigurieren
@@ -144,7 +151,7 @@ class DevCloneService
             $this->docker($dir, ['compose', '-p', $project, 'up', '-d', 'db'], 120);
             $this->waitForHealthyDb($dir, $project);
             $this->setState($site, ['status' => 'building', 'message' => 'WordPress-Datenbank importieren…', 'error' => null]);
-            $this->importDatabase($dir, $project);
+            $this->importDatabase($site, $dir, $project);
 
             // Dateirechte fuer den Webserver-Benutzer
             $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', '--user', 'root', 'cli', 'chown', '-R', '33:33', '/var/www/html'], 300);
@@ -725,31 +732,76 @@ YAML;
         throw new RuntimeException('MariaDB im Clone wird nicht gesund (Healthcheck).');
     }
 
-    private function importDatabase(string $dir, string $project): void
+    private function importDatabase(Site $site, string $dir, string $project): void
     {
         $dump = $dir.'/database.sql';
         if (! is_file($dump) || filesize($dump) < 32) {
             throw new RuntimeException('database.sql fehlt oder ist leer.');
         }
 
+        $this->docker($dir, [
+            'compose', '-p', $project, 'exec', '-T', 'db',
+            'mariadb', '-uroot', '-pwordpress', '-e',
+            'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0;',
+        ], 30, true);
+
         $process = new Process(
             [
                 'docker', 'compose', '-p', $project, 'exec', '-T', 'db',
-                'mariadb', '-uroot', '-pwordpress',
-                '--binary-mode',
-                '--init-command=SET SESSION sql_mode=\'NO_ENGINE_SUBSTITUTION\'; SET SESSION foreign_key_checks=0;',
-                'wordpress',
+                'sh', '-c',
+                'MYSQL_PWD=wordpress mariadb -uroot --binary-mode --init-command="SET SESSION sql_mode=NO_ENGINE_SUBSTITUTION; SET SESSION foreign_key_checks=0; SET SESSION unique_checks=0;" wordpress < /import/dump.sql',
             ],
             $dir,
             null,
             null,
             1800
         );
-        $process->setInput(fopen($dump, 'r'));
-        $process->run();
+        $process->start();
+        $lastTables = -1;
+        while ($process->isRunning()) {
+            $tables = $this->countImportedTables($dir, $project);
+            if ($tables !== $lastTables) {
+                $lastTables = $tables;
+                $this->setState($site, [
+                    'status' => 'building',
+                    'message' => $tables > 0
+                        ? "WordPress-Datenbank importieren ({$tables} Tabellen)…"
+                        : 'WordPress-Datenbank importieren…',
+                    'error' => null,
+                ]);
+            }
+            sleep(4);
+        }
         if (! $process->isSuccessful()) {
             throw new RuntimeException('Datenbank-Import fehlgeschlagen: '.mb_substr(trim($process->getErrorOutput() ?: $process->getOutput()), -400));
         }
+
+        $this->docker($dir, [
+            'compose', '-p', $project, 'exec', '-T', 'db',
+            'mariadb', '-uroot', '-pwordpress', '-e',
+            'SET GLOBAL innodb_flush_log_at_trx_commit=1; SET GLOBAL sync_binlog=1;',
+        ], 30, true);
+    }
+
+    private function countImportedTables(string $dir, string $project): int
+    {
+        $process = new Process(
+            [
+                'docker', 'compose', '-p', $project, 'exec', '-T', 'db',
+                'mariadb', '-uroot', '-pwordpress', '-N', '-e',
+                'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema="wordpress"',
+            ],
+            $dir,
+            null,
+            null,
+            15
+        );
+        $process->run();
+        if (! $process->isSuccessful()) {
+            return 0;
+        }
+
+        return (int) trim($process->getOutput());
     }
 
     private function dockerAvailable(): bool
