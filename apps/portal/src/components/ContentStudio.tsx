@@ -218,7 +218,7 @@ export function ContentStudio({
 
   return (
     <div className="surface surface-pad">
-      <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>KI-Wartung</h3>
+      <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>KI-Editor</h3>
       <p className="muted" style={{ marginTop: 0 }}>
         Zuerst die Site vollständig scannen. Dann Ziel wählen: isolierte Kopie oder Live.
         Beide hängen an derselben Site – der Pairing-Key bleibt nur auf Live, die Kopie wird über den WWC-Server gesteuert.
