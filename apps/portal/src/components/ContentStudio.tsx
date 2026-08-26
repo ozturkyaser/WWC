@@ -265,6 +265,7 @@ export function ContentStudio({
         setMsg("Änderung wurde rückgängig gemacht.");
       } else if (res.data.draft?.status === "undoing") {
         setMsg("Rücknahme läuft über den Live-Agenten…");
+      } else if (res.data.draft?.error) {
         setMsg(res.data.draft.error);
       } else if (path === "scan" && res.data.intel) {
         setMsg("Scan fertig.");
