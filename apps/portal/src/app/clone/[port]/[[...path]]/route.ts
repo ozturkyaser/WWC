@@ -33,6 +33,9 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
   headers.set("x-forwarded-proto", "https");
   headers.set("x-forwarded-host", req.headers.get("host") || "");
   headers.set("x-forwarded-prefix", prefix);
+  // fetch() entpackt gzip; Content-Length der komprimierten Antwort
+  // wuerde CSS/JS abschneiden. Upstream unkomprimiert anfragen.
+  headers.set("accept-encoding", "identity");
 
   const method = req.method.toUpperCase();
   const body = method === "GET" || method === "HEAD" ? undefined : await req.arrayBuffer();
@@ -58,7 +61,17 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
 
   const out = new Headers();
   upstream.headers.forEach((value, key) => {
-    if (["transfer-encoding", "connection", "keep-alive", "x-frame-options", "content-security-policy"].includes(key.toLowerCase())) {
+    if (
+      [
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "x-frame-options",
+        "content-security-policy",
+        "content-encoding",
+        "content-length",
+      ].includes(key.toLowerCase())
+    ) {
       return;
     }
     if (key.toLowerCase() === "location") {
@@ -71,6 +84,9 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
     }
     out.append(key, value);
   });
+  out.set("cache-control", "private, max-age=60");
+  out.delete("expires");
+  out.delete("etag");
 
   return new NextResponse(upstream.body, { status: upstream.status, headers: out });
 }

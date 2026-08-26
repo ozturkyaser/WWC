@@ -185,6 +185,7 @@ class DevCloneService
             $this->wp($dir, $project, ['plugin', 'deactivate', 'wwc-agent']);
             $this->wp($dir, $project, ['plugin', 'deactivate', 'wp-fastest-cache'], true);
             $this->wp($dir, $project, ['plugin', 'deactivate', 'really-simple-ssl'], true);
+            $this->wp($dir, $project, ['plugin', 'deactivate', 'autoptimize'], true);
             $this->wp($dir, $project, ['option', 'delete', 'wwc_agent'], true);
 
             $adminUser = 'wwc-dev';
@@ -726,6 +727,29 @@ add_filter('wp_robots', function (array $robots): array {
 }, 100);
 add_action('admin_notices', function (): void {
     echo '<div class="notice notice-warning"><p><strong>WWC Dev-Kopie</strong> – Änderungen hier wirken sich nicht auf die Live-Site aus. Mails sind deaktiviert.</p></div>';
+});
+add_filter('style_loader_src', static function (string $src): string {
+    return add_query_arg('wwc', '2', $src);
+}, 99);
+add_filter('script_loader_src', static function (string $src): string {
+    return add_query_arg('wwc', '2', $src);
+}, 99);
+add_action('template_redirect', static function (): void {
+    $prefix = rtrim((string) (parse_url(home_url(), PHP_URL_PATH) ?: ''), '/');
+    if ($prefix === '') {
+        return;
+    }
+    ob_start(static function (string $html) use ($prefix): string {
+        $html = preg_replace('#((?:src|href|data-src|action|poster)=["\'])/(?!/|clone/|cdn-cgi/|_next/)#i', '$1'.$prefix.'/', $html) ?? $html;
+        $html = preg_replace('#(url\((["\']?))/(?!/|clone/|cdn-cgi/)#i', '$1'.$prefix.'/', $html) ?? $html;
+        $html = preg_replace_callback('#srcset=(["\'])([^"\']*)#i', static function (array $m) use ($prefix): string {
+            $val = preg_replace('#(^|,\s*)/(?!/|clone/)#', '$1'.$prefix.'/', $m[2]) ?? $m[2];
+
+            return 'srcset='.$m[1].$val;
+        }, $html) ?? $html;
+
+        return $html;
+    });
 });
 PHP;
         file_put_contents($muDir.'/wwc-clone-guard.php', $guard);
