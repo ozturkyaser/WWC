@@ -175,8 +175,11 @@ type SiteDetail = {
     intel_source?: string | null;
     scanned_at?: string | null;
     draft?: Record<string, unknown> | null;
+    target?: "live" | "clone";
+    live_paired?: boolean;
     clone_ready?: boolean;
     clone_url?: string | null;
+    scan_status?: string | null;
   } | null;
   staging_portal?: StagingPortal;
   events: Array<{

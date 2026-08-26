@@ -2,12 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Models\AgentJob;
 use App\Models\Membership;
 use App\Models\Organization;
 use App\Models\Site;
 use App\Models\User;
 use App\Services\ContentStudioService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class ContentStudioTest extends TestCase
@@ -46,6 +48,8 @@ class ContentStudioTest extends TestCase
     {
         $this->site->update([
             'content_studio' => [
+                'target' => 'live',
+                'intel_source' => 'live',
                 'intel' => [
                     'ok' => true,
                     'site' => ['name' => 'Cuno'],
@@ -68,7 +72,7 @@ class ContentStudioTest extends TestCase
         $this->assertSame('publish', $res->json('data.draft.ops.0.status'));
     }
 
-    public function test_run_requires_clone(): void
+    public function test_run_requires_clone_or_pairing(): void
     {
         $this->site->update([
             'content_studio' => [
@@ -137,15 +141,32 @@ class ContentStudioTest extends TestCase
             ['op' => 'set_option', 'key' => 'admin_email', 'value' => 'x'],
             ['op' => 'set_option', 'key' => 'blogname', 'value' => 'Neu'],
             ['op' => 'create_post', 'type' => 'page', 'title' => 'Hallo', 'content' => '<p>Hi</p>'],
+            ['op' => 'plugin_deactivate', 'slug' => 'autoptimize'],
+            ['op' => 'update_theme_file', 'path' => '../wp-config.php', 'content' => 'x'],
         ]);
 
-        $this->assertCount(2, $ops);
+        $this->assertCount(3, $ops);
         $this->assertSame('set_option', $ops[0]['op']);
         $this->assertSame('blogname', $ops[0]['key']);
         $this->assertSame('create_post', $ops[1]['op']);
+        $this->assertSame('plugin_deactivate', $ops[2]['op']);
     }
 
-    public function test_scan_and_mcp_require_clone(): void
+    public function test_sanitize_keeps_theme_file_only_on_clone(): void
+    {
+        $svc = app(ContentStudioService::class);
+        $clone = $svc->sanitizeOps([
+            ['op' => 'update_theme_file', 'path' => 'style.css', 'content' => 'body{}'],
+        ], 'clone');
+        $live = $svc->sanitizeOps([
+            ['op' => 'update_theme_file', 'path' => 'style.css', 'content' => 'body{}'],
+        ], 'live');
+
+        $this->assertCount(1, $clone);
+        $this->assertSame([], $live);
+    }
+
+    public function test_scan_without_clone_or_pairing_fails(): void
     {
         $this->withToken($this->token)
             ->getJson('/api/mcp/tools')
@@ -161,6 +182,72 @@ class ContentStudioTest extends TestCase
                 'tool' => 'wwc_site_scan',
                 'site_id' => $this->site->id,
             ])
+            ->assertStatus(422);
+    }
+
+    public function test_scan_live_dispatches_agent_job(): void
+    {
+        Queue::fake();
+        $this->site->setHmacSecret('secret');
+        $this->site->paired_at = now();
+        $this->site->save();
+
+        $res = $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/scan', ['target' => 'live'])
+            ->assertOk();
+
+        $this->assertSame('live', $res->json('data.target'));
+        $this->assertSame('pending', $res->json('data.scan_status'));
+        $this->assertTrue($res->json('data.live_paired'));
+        $this->assertDatabaseHas('agent_jobs', [
+            'site_id' => $this->site->id,
+            'command' => 'site_scan',
+        ]);
+    }
+
+    public function test_run_live_requires_confirm(): void
+    {
+        Queue::fake();
+        $this->site->setHmacSecret('secret');
+        $this->site->paired_at = now();
+        $this->site->content_studio = [
+            'target' => 'live',
+            'intel_source' => 'live',
+            'scan_status' => 'ready',
+            'intel' => [
+                'ok' => true,
+                'site' => ['name' => 'Cuno'],
+                'pages' => [],
+                'plugins' => [],
+                'editors' => ['default' => 'gutenberg', 'builders' => []],
+            ],
+        ];
+        $this->site->save();
+
+        $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/run', [
+                'prompt' => 'Untertitel ändern',
+                'target' => 'live',
+            ])
+            ->assertStatus(422);
+
+        $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/run', [
+                'prompt' => 'Untertitel ändern',
+                'target' => 'live',
+                'confirm_live' => true,
+            ])
+            ->assertOk();
+
+        $this->assertTrue(
+            AgentJob::where('site_id', $this->site->id)->where('command', 'content_apply')->exists()
+        );
+    }
+
+    public function test_clone_target_requires_ready_clone(): void
+    {
+        $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/target', ['target' => 'clone'])
             ->assertStatus(422);
     }
 }

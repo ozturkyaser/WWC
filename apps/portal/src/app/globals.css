@@ -660,6 +660,26 @@ select, input[type="text"], input[type="email"], input[type="url"], input[type="
   align-items: baseline;
   color: var(--muted);
 }
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.segmented button {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.segmented button.active {
+  background: var(--accent);
+  color: #04140f;
+}
+.segmented button:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .process-log-pct { color: var(--accent); font-variant-numeric: tabular-nums; }
 .process-log-msg { color: rgba(230, 236, 242, 0.92); word-break: break-word; }
 .process-log-time { opacity: 0.65; white-space: nowrap; }

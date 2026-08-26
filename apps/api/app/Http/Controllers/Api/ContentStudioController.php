@@ -17,30 +17,59 @@ class ContentStudioController extends Controller
         return response()->json(['data' => $studio->payload($site)]);
     }
 
-    public function scan(Request $request, string $id, ContentStudioService $studio)
+    public function target(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);
+        $data = $request->validate(['target' => 'required|string|in:live,clone,dev']);
         try {
-            $data = $studio->scan($site);
+            $payload = $studio->setTarget($site, $data['target']);
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
-        AuditLogger::log('site.content.scan', $request->attributes->get('organization_id'), $request->user(), $site->id, [], $request);
+        AuditLogger::log('site.content.target', $request->attributes->get('organization_id'), $request->user(), $site->id, [
+            'target' => $data['target'],
+        ], $request);
 
-        return response()->json(['data' => $data]);
+        return response()->json(['data' => $payload]);
+    }
+
+    public function scan(Request $request, string $id, ContentStudioService $studio)
+    {
+        $site = $this->site($request, $id);
+        $data = $request->validate(['target' => 'nullable|string|in:live,clone,dev']);
+        try {
+            $payload = $studio->scan($site, $data['target'] ?? null);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        AuditLogger::log('site.content.scan', $request->attributes->get('organization_id'), $request->user(), $site->id, [
+            'target' => $data['target'] ?? null,
+        ], $request);
+
+        return response()->json(['data' => $payload]);
     }
 
     public function run(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);
-        $data = $request->validate(['prompt' => 'required|string|max:4000']);
+        $data = $request->validate([
+            'prompt' => 'required|string|max:4000',
+            'target' => 'nullable|string|in:live,clone,dev',
+            'confirm_live' => 'nullable|boolean',
+        ]);
         try {
-            $payload = $studio->runOnDev($site, $data['prompt']);
+            $payload = $studio->run(
+                $site,
+                $data['prompt'],
+                $data['target'] ?? null,
+                (bool) ($data['confirm_live'] ?? false)
+            );
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
-        AuditLogger::log('site.content.run_dev', $request->attributes->get('organization_id'), $request->user(), $site->id, [
+        AuditLogger::log('site.content.run', $request->attributes->get('organization_id'), $request->user(), $site->id, [
             'prompt' => mb_substr($data['prompt'], 0, 200),
+            'target' => $data['target'] ?? null,
         ], $request);
 
         return response()->json(['data' => $payload]);
@@ -49,9 +78,12 @@ class ContentStudioController extends Controller
     public function plan(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);
-        $data = $request->validate(['prompt' => 'required|string|max:4000']);
+        $data = $request->validate([
+            'prompt' => 'required|string|max:4000',
+            'target' => 'nullable|string|in:live,clone,dev',
+        ]);
         try {
-            $draft = $studio->plan($site, $data['prompt']);
+            $draft = $studio->plan($site, $data['prompt'], $data['target'] ?? null);
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -73,6 +105,23 @@ class ContentStudioController extends Controller
         AuditLogger::log('site.content.apply_dev', $request->attributes->get('organization_id'), $request->user(), $site->id, [], $request);
 
         return response()->json(['data' => $data]);
+    }
+
+    public function applyLive(Request $request, string $id, ContentStudioService $studio)
+    {
+        $site = $this->site($request, $id);
+        $data = $request->validate(['confirm_live' => 'required|boolean']);
+        if (! $data['confirm_live']) {
+            return response()->json(['message' => 'Live-Änderungen brauchen eine ausdrückliche Bestätigung.'], 422);
+        }
+        try {
+            $data = $studio->applyLive($site);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        AuditLogger::log('site.content.apply_live', $request->attributes->get('organization_id'), $request->user(), $site->id, [], $request);
+
+        return response()->json(['data' => $data], 202);
     }
 
     public function promote(Request $request, string $id, ContentStudioService $studio)

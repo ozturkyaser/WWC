@@ -111,10 +111,15 @@ final class WWC_Agent_Site_Intel
             'pages' => $pages,
             'posts' => $posts,
             'menus' => self::menus(),
+            'permalinks' => (string) get_option('permalink_structure'),
+            'custom_css' => mb_substr((string) wp_get_custom_css(), 0, 4000),
+            'theme_files' => self::theme_file_list(),
+            'widgets' => self::widget_map(),
             'counts' => [
                 'pages' => (int) wp_count_posts('page')->publish,
                 'posts' => (int) wp_count_posts('post')->publish,
                 'plugins_active' => count(array_filter($plugins, static fn ($p) => $p['active'])),
+                'plugins_total' => count($plugins),
             ],
         ];
     }
@@ -163,6 +168,12 @@ final class WWC_Agent_Site_Intel
             'set_option' => self::set_option($op),
             'set_logo' => self::set_logo($op),
             'upload_media' => self::upload_media($op),
+            'plugin_activate' => self::plugin_toggle($op, true),
+            'plugin_deactivate' => self::plugin_toggle($op, false),
+            'plugin_update' => self::plugin_update($op),
+            'theme_update' => self::theme_update($op),
+            'set_custom_css' => self::set_custom_css($op),
+            'update_theme_file' => self::update_theme_file($op),
             default => ['ok' => false, 'error' => 'Unbekannte Operation: '.$name],
         };
     }
@@ -272,6 +283,138 @@ final class WWC_Agent_Site_Intel
         return $uploaded;
     }
 
+    /** @param array<string, mixed> $op */
+    private static function plugin_toggle(array $op, bool $activate): array
+    {
+        if (! function_exists('get_plugins')) {
+            require_once ABSPATH.'wp-admin/includes/plugin.php';
+        }
+        $slug = trim((string) ($op['slug'] ?? ''));
+        if ($slug === '') {
+            return ['ok' => false, 'error' => 'Plugin-Slug fehlt'];
+        }
+        $file = self::plugin_file_from_slug($slug);
+        if ($file === null) {
+            return ['ok' => false, 'error' => 'Plugin nicht gefunden: '.$slug];
+        }
+        if ($activate) {
+            $err = activate_plugin($file);
+            if (is_wp_error($err)) {
+                return ['ok' => false, 'error' => $err->get_error_message()];
+            }
+        } else {
+            deactivate_plugins($file, false, false);
+        }
+
+        return ['ok' => true, 'slug' => $slug];
+    }
+
+    /** @param array<string, mixed> $op */
+    private static function plugin_update(array $op): array
+    {
+        require_once ABSPATH.'wp-admin/includes/file.php';
+        require_once ABSPATH.'wp-admin/includes/misc.php';
+        require_once ABSPATH.'wp-admin/includes/plugin.php';
+        require_once ABSPATH.'wp-admin/includes/class-wp-upgrader.php';
+        $slug = trim((string) ($op['slug'] ?? ''));
+        $file = $slug !== '' ? self::plugin_file_from_slug($slug) : null;
+        if ($file === null) {
+            return ['ok' => false, 'error' => 'Plugin nicht gefunden: '.$slug];
+        }
+        wp_update_plugins();
+        $upgrader = new Plugin_Upgrader(new Automatic_Upgrader_Skin);
+        $result = $upgrader->upgrade($file);
+        if (is_wp_error($result)) {
+            return ['ok' => false, 'error' => $result->get_error_message()];
+        }
+        if ($result === false) {
+            return ['ok' => false, 'error' => 'Kein Plugin-Update verfügbar oder fehlgeschlagen'];
+        }
+
+        return ['ok' => true, 'slug' => $slug];
+    }
+
+    /** @param array<string, mixed> $op */
+    private static function theme_update(array $op): array
+    {
+        require_once ABSPATH.'wp-admin/includes/file.php';
+        require_once ABSPATH.'wp-admin/includes/misc.php';
+        require_once ABSPATH.'wp-admin/includes/theme.php';
+        require_once ABSPATH.'wp-admin/includes/class-wp-upgrader.php';
+        $slug = trim((string) ($op['slug'] ?? get_stylesheet()));
+        if ($slug === '') {
+            return ['ok' => false, 'error' => 'Theme-Slug fehlt'];
+        }
+        wp_update_themes();
+        $upgrader = new Theme_Upgrader(new Automatic_Upgrader_Skin);
+        $result = $upgrader->upgrade($slug);
+        if (is_wp_error($result)) {
+            return ['ok' => false, 'error' => $result->get_error_message()];
+        }
+        if ($result === false) {
+            return ['ok' => false, 'error' => 'Kein Theme-Update verfügbar oder fehlgeschlagen'];
+        }
+
+        return ['ok' => true, 'slug' => $slug];
+    }
+
+    private static function plugin_file_from_slug(string $slug): ?string
+    {
+        foreach (array_keys(get_plugins()) as $file) {
+            $dir = dirname((string) $file);
+            $base = basename((string) $file, '.php');
+            if ($dir === $slug || $base === $slug || (string) $file === $slug) {
+                return (string) $file;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $op */
+    private static function set_custom_css(array $op): array
+    {
+        $css = (string) ($op['css'] ?? $op['value'] ?? '');
+        $result = wp_update_custom_css_post($css);
+        if (is_wp_error($result)) {
+            return ['ok' => false, 'error' => $result->get_error_message()];
+        }
+
+        return ['ok' => true];
+    }
+
+    /** @param array<string, mixed> $op */
+    private static function update_theme_file(array $op): array
+    {
+        $rel = str_replace('\\', '/', trim((string) ($op['path'] ?? '')));
+        $rel = ltrim($rel, '/');
+        if ($rel === '' || str_contains($rel, '..')) {
+            return ['ok' => false, 'error' => 'Ungültiger Theme-Pfad'];
+        }
+        $ext = strtolower((string) pathinfo($rel, PATHINFO_EXTENSION));
+        if (! in_array($ext, ['css', 'js', 'php', 'json', 'svg', 'html'], true)) {
+            return ['ok' => false, 'error' => 'Dateityp nicht erlaubt: '.$ext];
+        }
+        $root = realpath(get_stylesheet_directory());
+        if ($root === false) {
+            return ['ok' => false, 'error' => 'Theme-Verzeichnis fehlt'];
+        }
+        $full = $root.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $rel);
+        $parent = dirname($full);
+        if (! is_dir($parent)) {
+            return ['ok' => false, 'error' => 'Ordner existiert nicht'];
+        }
+        $parentReal = realpath($parent);
+        if ($parentReal === false || ! str_starts_with($parentReal, $root)) {
+            return ['ok' => false, 'error' => 'Pfad außerhalb des Themes'];
+        }
+        if (file_put_contents($full, (string) ($op['content'] ?? '')) === false) {
+            return ['ok' => false, 'error' => 'Datei nicht schreibbar'];
+        }
+
+        return ['ok' => true, 'path' => $rel];
+    }
+
     /** @return array{ok:bool,id?:int,url?:string,error?:string} */
     private static function sideload_file(string $path, string $title): array
     {
@@ -369,6 +512,56 @@ final class WWC_Agent_Site_Intel
                 'slug' => (string) $menu->slug,
                 'items' => $items,
             ];
+        }
+
+        return $out;
+    }
+
+    /** @return list<array{path:string,bytes:int}> */
+    private static function theme_file_list(): array
+    {
+        $root = realpath(get_stylesheet_directory());
+        if ($root === false) {
+            return [];
+        }
+        $out = [];
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $file) {
+            if (! $file instanceof SplFileInfo || ! $file->isFile()) {
+                continue;
+            }
+            $path = str_replace('\\', '/', substr($file->getPathname(), strlen($root) + 1));
+            if (str_contains($path, 'node_modules/') || str_contains($path, '/vendor/')) {
+                continue;
+            }
+            $ext = strtolower($file->getExtension());
+            if (! in_array($ext, ['php', 'css', 'js', 'json', 'html'], true)) {
+                continue;
+            }
+            $out[] = ['path' => $path, 'bytes' => (int) $file->getSize()];
+            if (count($out) >= 80) {
+                break;
+            }
+        }
+
+        return $out;
+    }
+
+    /** @return list<array{id:string,widgets:int}> */
+    private static function widget_map(): array
+    {
+        $sidebars = wp_get_sidebars_widgets();
+        if (! is_array($sidebars)) {
+            return [];
+        }
+        $out = [];
+        foreach ($sidebars as $id => $widgets) {
+            if ($id === 'wp_inactive_widgets' || ! is_array($widgets)) {
+                continue;
+            }
+            $out[] = ['id' => (string) $id, 'widgets' => count($widgets)];
         }
 
         return $out;
