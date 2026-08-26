@@ -135,12 +135,16 @@ class DevCloneService
             $this->installIntelOnClone($site);
             $this->writeComposeFile($dir, $site, $port, $phpImage);
 
-            // 3. Erst NUR die Datenbank starten (importiert database.sql beim ersten Start).
-            //    Der Webserver bleibt aus, bis alle Bereinigungen durch sind — sonst koennten
-            //    ueberfaellige Cron-Events der Live-Site im Clone feuern (Heartbeat, Self-Update).
+            // 3. Erst NUR die Datenbank starten (Dump erst danach importieren).
+            //    Initdb + Healthcheck gleichzeitig funktionieren nicht: MariaDB
+            //    lauscht waehrend des Imports ohne TCP, Compose markiert unhealthy.
             $project = $this->projectName($site);
             $this->docker($dir, ['compose', '-p', $project, 'down', '--volumes', '--remove-orphans'], 120, true);
-            $this->docker($dir, ['compose', '-p', $project, 'up', '-d', '--wait', 'db'], 600);
+            $this->setState($site, ['status' => 'building', 'message' => 'Datenbank starten…', 'error' => null]);
+            $this->docker($dir, ['compose', '-p', $project, 'up', '-d', 'db'], 120);
+            $this->waitForHealthyDb($dir, $project);
+            $this->setState($site, ['status' => 'building', 'message' => 'WordPress-Datenbank importieren…', 'error' => null]);
+            $this->importDatabase($dir, $project);
 
             // Dateirechte fuer den Webserver-Benutzer
             $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', '--user', 'root', 'cli', 'chown', '-R', '33:33', '/var/www/html'], 300);
@@ -657,18 +661,21 @@ PHP;
 services:
   db:
     image: mariadb:11
+    command: --innodb-buffer-pool-size=256M --sql-mode=NO_ENGINE_SUBSTITUTION
     environment:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
       MYSQL_PASSWORD: wordpress
       MYSQL_ROOT_PASSWORD: wordpress
     volumes:
-      - {$host}/database.sql:/docker-entrypoint-initdb.d/000-import.sql:ro
+      - dbdata:/var/lib/mysql
+      - {$host}/database.sql:/import/dump.sql:ro
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
-      retries: 60
+      retries: 24
+      start_period: 40s
 
   wp:
     image: wordpress:php{$phpImage}-apache
@@ -690,8 +697,59 @@ services:
       db:
         condition: service_healthy
     profiles: ["tools"]
+
+volumes:
+  dbdata:
 YAML;
         file_put_contents($dir.'/docker-compose.yml', $compose);
+    }
+
+    private function waitForHealthyDb(string $dir, string $project): void
+    {
+        $deadline = time() + 180;
+        do {
+            $process = new Process(
+                ['docker', 'compose', '-p', $project, 'exec', '-T', 'db', 'healthcheck.sh', '--connect', '--innodb_initialized'],
+                $dir,
+                null,
+                null,
+                20
+            );
+            $process->run();
+            if ($process->isSuccessful()) {
+                return;
+            }
+            sleep(3);
+        } while (time() < $deadline);
+
+        throw new RuntimeException('MariaDB im Clone wird nicht gesund (Healthcheck).');
+    }
+
+    private function importDatabase(string $dir, string $project): void
+    {
+        $dump = $dir.'/database.sql';
+        if (! is_file($dump) || filesize($dump) < 32) {
+            throw new RuntimeException('database.sql fehlt oder ist leer.');
+        }
+
+        $process = new Process(
+            [
+                'docker', 'compose', '-p', $project, 'exec', '-T', 'db',
+                'mariadb', '-uroot', '-pwordpress',
+                '--binary-mode',
+                '--init-command=SET SESSION sql_mode=\'NO_ENGINE_SUBSTITUTION\'; SET SESSION foreign_key_checks=0;',
+                'wordpress',
+            ],
+            $dir,
+            null,
+            null,
+            1800
+        );
+        $process->setInput(fopen($dump, 'r'));
+        $process->run();
+        if (! $process->isSuccessful()) {
+            throw new RuntimeException('Datenbank-Import fehlgeschlagen: '.mb_substr(trim($process->getErrorOutput() ?: $process->getOutput()), -400));
+        }
     }
 
     private function dockerAvailable(): bool
@@ -891,7 +949,9 @@ PHP);
     {
         $base = rtrim((string) config('wwc.clones_host_dir'), '/');
         if ($base === '') {
-            return $containerPath; // API laeuft direkt auf dem Host
+            $real = realpath($containerPath);
+
+            return $real !== false ? $real : $containerPath;
         }
         $containerBase = storage_path('app/wwc-clones');
 
