@@ -1920,11 +1920,15 @@ export default function SiteDetailPage() {
             )}
             <button
               className="btn"
-              disabled={busy || devClone?.status === "building"}
+              disabled={busy}
               type="button"
               onClick={devCloneBuild}
             >
-              {devClone?.status === "ready" ? "Neu aufbauen (aktuelles Backup)" : "Isolierte Umgebung erstellen"}
+              {devClone?.status === "ready"
+                ? "Neu aufbauen (aktuelles Backup)"
+                : devClone?.status === "building"
+                  ? "Build neu starten"
+                  : "Isolierte Umgebung erstellen"}
             </button>
             {devClone && devClone.status !== "building" && (
               <button

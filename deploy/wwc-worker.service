@@ -1,0 +1,14 @@
+[Unit]
+Description=WWC Laravel Queue Worker
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/wwc/current/apps/api
+ExecStart=/usr/bin/php artisan queue:work database --sleep=1 --tries=1 --timeout=7300
+Restart=always
+RestartSec=5
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

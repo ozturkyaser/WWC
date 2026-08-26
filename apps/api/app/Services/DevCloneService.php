@@ -89,6 +89,10 @@ class DevCloneService
     public function build(Site $site): void
     {
         try {
+            if (! $this->dockerAvailable()) {
+                throw new RuntimeException('Docker fehlt auf dem WWC-Server – die isolierte Umgebung kann nicht starten.');
+            }
+
             $backup = $this->latestUsableBackup($site);
             if (! $backup) {
                 $this->setState($site, [
@@ -688,6 +692,14 @@ services:
     profiles: ["tools"]
 YAML;
         file_put_contents($dir.'/docker-compose.yml', $compose);
+    }
+
+    private function dockerAvailable(): bool
+    {
+        $process = new Process(['docker', 'compose', 'version'], null, null, null, 8);
+        $process->run();
+
+        return $process->isSuccessful();
     }
 
     // ---------------------------------------------------------------

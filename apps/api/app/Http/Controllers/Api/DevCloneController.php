@@ -23,11 +23,16 @@ class DevCloneController extends Controller
         }
 
         $current = $site->dev_clone['status'] ?? null;
-        if ($current === 'building') {
+        if ($current === 'building' && $this->cloneBuildIsQueued($site->id)) {
             return response()->json(['message' => 'Dev-Kopie wird bereits gebaut.'], 409);
         }
 
-        $site->update(['dev_clone' => array_merge($site->dev_clone ?? [], ['status' => 'building', 'error' => null])]);
+        $site->update(['dev_clone' => array_merge($site->dev_clone ?? [], [
+            'status' => 'building',
+            'error' => null,
+            'message' => 'Build wird in die Warteschlange gelegt…',
+            'building_started_at' => now()->toIso8601String(),
+        ])]);
         BuildDevCloneJob::dispatch($site->id);
         AuditLogger::log('site.dev_clone.build', $orgId, $request->user(), $site->id, [], $request);
 
@@ -65,5 +70,17 @@ class DevCloneController extends Controller
         AuditLogger::log('site.dev_clone.destroy', $orgId, $request->user(), $site->id, [], $request);
 
         return response()->json(['ok' => true]);
+    }
+
+    private function cloneBuildIsQueued(string $siteId): bool
+    {
+        if (config('queue.default') === 'sync') {
+            return false;
+        }
+
+        return \Illuminate\Support\Facades\DB::table('jobs')
+            ->where('payload', 'like', '%BuildDevCloneJob%')
+            ->where('payload', 'like', '%'.$siteId.'%')
+            ->exists();
     }
 }

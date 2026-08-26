@@ -40,6 +40,22 @@ class DevCloneBuildTest extends TestCase
         $this->assertSame('building', $site->fresh()->dev_clone['status']);
     }
 
+    public function test_stale_building_can_be_restarted(): void
+    {
+        Queue::fake();
+        [$user, $site] = $this->site();
+        $site->setHmacSecret('secret');
+        $site->paired_at = now();
+        $site->dev_clone = ['status' => 'building', 'message' => 'Backup vom Kundenserver holen 20/92: files-17.zip'];
+        $site->save();
+
+        $this->withToken($user->createToken('t')->plainTextToken)
+            ->postJson('/api/sites/'.$site->id.'/dev-clone')
+            ->assertStatus(202);
+
+        Queue::assertPushed(BuildDevCloneJob::class);
+    }
+
     public function test_clone_url_uses_public_host_outside_local(): void
     {
         $this->app['env'] = 'production';
