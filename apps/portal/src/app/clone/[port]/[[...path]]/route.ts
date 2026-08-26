@@ -16,10 +16,13 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
     return NextResponse.json({ message: "Ungültiger Clone-Port" }, { status: 404 });
   }
 
-  const rest = (segments || []).join("/");
-  const base = (process.env.WWC_CLONE_PROXY_TARGET || "http://127.0.0.1").replace(/\/$/, "");
-  const target = `${base}:${port}/${rest}${req.nextUrl.search}`;
   const prefix = `/clone/${port}`;
+  const pathname = req.nextUrl.pathname;
+  const rest = pathname.startsWith(prefix)
+    ? pathname.slice(prefix.length)
+    : `/${(segments || []).join("/")}`;
+  const base = (process.env.WWC_CLONE_PROXY_TARGET || "http://127.0.0.1").replace(/\/$/, "");
+  const target = `${base}:${port}${rest || "/"}${req.nextUrl.search}`;
 
   const headers = new Headers();
   for (const name of ["cookie", "content-type", "accept", "accept-language", "user-agent"]) {

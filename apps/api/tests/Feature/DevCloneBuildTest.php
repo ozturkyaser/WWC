@@ -89,6 +89,27 @@ class DevCloneBuildTest extends TestCase
         $this->assertFalse($svc->urlNeedsCloudflareRepair('https://wwc.kiservicehub.de/clone/9123'));
     }
 
+    public function test_intel_runner_is_not_a_mu_plugin(): void
+    {
+        [$user, $site] = $this->site();
+        $dir = app(DevCloneService::class)->cloneDir($site);
+        mkdir($dir.'/html/wp-content/mu-plugins', 0755, true);
+        file_put_contents($dir.'/html/wp-content/mu-plugins/wwc-intel-run.php', '<?php leftover();');
+
+        try {
+            app(DevCloneService::class)->installIntelOnClone($site);
+            $this->assertFileDoesNotExist($dir.'/html/wp-content/mu-plugins/wwc-intel-run.php');
+            $this->assertFileExists($dir.'/html/wp-content/wwc-intel-run.php');
+            $this->assertFileExists($dir.'/html/wp-content/mu-plugins/wwc-site-intel.php');
+            $this->assertFileExists($dir.'/html/wp-content/mu-plugins/wwc-site-intel-lib.php');
+            $runner = (string) file_get_contents($dir.'/html/wp-content/wwc-intel-run.php');
+            $this->assertStringContainsString('WWC_Agent_Site_Intel::scan()', $runner);
+            $this->assertStringContainsString('WP_CONTENT_DIR', $runner);
+        } finally {
+            $this->rmTree($dir);
+        }
+    }
+
     public function test_clone_url_keeps_localhost_in_local(): void
     {
         $this->app['env'] = 'local';
@@ -117,5 +138,20 @@ class DevCloneBuildTest extends TestCase
         ]);
 
         return [$user, $site];
+    }
+
+    private function rmTree(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($it as $file) {
+            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
+        }
+        rmdir($dir);
     }
 }

@@ -120,7 +120,7 @@ class DevCloneService
             $reuseFiles = is_file($dir.'/html/wp-settings.php') && is_file($dir.'/database.sql');
             $manifest = [];
             if ($reuseFiles) {
-                $this->setState($site, ['status' => 'building', 'message' => 'Vorhandene Dateien nutzen, Datenbank neu aufsetzen…', 'error' => null]);
+                $this->setState($site, ['status' => 'building', 'message' => 'Vorhandene Dateien nutzen…', 'error' => null]);
                 $manifestFile = rtrim((string) $backup->storage_path, '/').'/manifest.json';
                 if (is_file($manifestFile)) {
                     $manifest = json_decode((string) file_get_contents($manifestFile), true) ?: [];
@@ -138,6 +138,7 @@ class DevCloneService
             $cloneUrl = $this->clonePublicUrl($port);
             $tablePrefix = $this->detectTablePrefix($dir.'/html/wp-config.php');
             $this->writeCloneWpConfig($dir, $tablePrefix, $cloneUrl);
+            $this->neutralizeCloneHtaccess($dir);
             $this->writeGuardMuPlugin($dir);
             $this->installIntelOnClone($site);
             $this->writeComposeFile($dir, $site, $port, $phpImage);
@@ -145,16 +146,30 @@ class DevCloneService
             // 3. Erst NUR die Datenbank starten (Dump erst danach importieren).
             //    Initdb + Healthcheck gleichzeitig funktionieren nicht: MariaDB
             //    lauscht waehrend des Imports ohne TCP, Compose markiert unhealthy.
+            //    Bei einem Retry NICHT --volumes loeschen, sonst geht ein
+            //    bereits fertiger Import verloren.
             $project = $this->projectName($site);
-            $this->docker($dir, ['compose', '-p', $project, 'down', '--volumes', '--remove-orphans'], 120, true);
             $this->setState($site, ['status' => 'building', 'message' => 'Datenbank starten…', 'error' => null]);
             $this->docker($dir, ['compose', '-p', $project, 'up', '-d', 'db'], 120);
             $this->waitForHealthyDb($dir, $project);
-            $this->setState($site, ['status' => 'building', 'message' => 'WordPress-Datenbank importieren…', 'error' => null]);
-            $this->importDatabase($site, $dir, $project);
+            $tables = $this->countImportedTables($dir, $project);
+            if ($tables < 20) {
+                if ($tables > 0) {
+                    $this->setState($site, ['status' => 'building', 'message' => 'Unvollständigen Import verwerfen…', 'error' => null]);
+                    $this->docker($dir, ['compose', '-p', $project, 'down', '--volumes', '--remove-orphans'], 120, true);
+                    $this->docker($dir, ['compose', '-p', $project, 'up', '-d', 'db'], 120);
+                    $this->waitForHealthyDb($dir, $project);
+                }
+                $this->setState($site, ['status' => 'building', 'message' => 'WordPress-Datenbank importieren…', 'error' => null]);
+                $this->importDatabase($site, $dir, $project);
+            } else {
+                $this->setState($site, ['status' => 'building', 'message' => "Vorhandene Datenbank nutzen ({$tables} Tabellen)…", 'error' => null]);
+            }
 
-            // Dateirechte fuer den Webserver-Benutzer
-            $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', '--user', 'root', 'cli', 'chown', '-R', '33:33', '/var/www/html'], 300);
+            // Dateirechte fuer den Webserver-Benutzer. --no-deps, weil die DB
+            // schon laeuft; allowFailure, weil html nach dem Entpacken oft
+            // schon www-data gehoert und ein Image-Pull den Worker killen kann.
+            $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', '--no-deps', '--user', 'root', 'cli', 'chown', '-R', '33:33', '/var/www/html'], 300, true);
 
             // 4. Nacharbeiten per wp-cli: URLs umschreiben, noindex, Admin-Zugang
             $this->waitForWordPress($dir, $project);
@@ -168,6 +183,8 @@ class DevCloneService
             // Der WWC-Agent darf im Clone nicht laufen: er wuerde sich mit den
             // Zugangsdaten der Live-Site an der API melden und Status/Inventar verfaelschen.
             $this->wp($dir, $project, ['plugin', 'deactivate', 'wwc-agent']);
+            $this->wp($dir, $project, ['plugin', 'deactivate', 'wp-fastest-cache'], true);
+            $this->wp($dir, $project, ['plugin', 'deactivate', 'really-simple-ssl'], true);
             $this->wp($dir, $project, ['option', 'delete', 'wwc_agent'], true);
 
             $adminUser = 'wwc-dev';
@@ -611,6 +628,18 @@ class DevCloneService
 if (!empty(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
     \$_SERVER['HTTPS'] = 'on';
 }
+if (! empty(\$_SERVER['HTTP_X_FORWARDED_PREFIX'])) {
+    \$wwcPrefix = rtrim((string) \$_SERVER['HTTP_X_FORWARDED_PREFIX'], '/');
+    \$wwcUri = (string) (\$_SERVER['REQUEST_URI'] ?? '/');
+    if (\$wwcPrefix !== '' && strncmp(\$wwcUri, \$wwcPrefix, strlen(\$wwcPrefix)) !== 0) {
+        \$_SERVER['REQUEST_URI'] = \$wwcPrefix . (\$wwcUri === '' ? '/' : \$wwcUri);
+        foreach (['SCRIPT_NAME', 'PHP_SELF'] as \$wwcKey) {
+            if (! empty(\$_SERVER[\$wwcKey]) && strncmp((string) \$_SERVER[\$wwcKey], \$wwcPrefix, strlen(\$wwcPrefix)) !== 0) {
+                \$_SERVER[\$wwcKey] = \$wwcPrefix . \$_SERVER[\$wwcKey];
+            }
+        }
+    }
+}
 define('DB_NAME', 'wordpress');
 define('DB_USER', 'wordpress');
 define('DB_PASSWORD', 'wordpress');
@@ -636,6 +665,40 @@ if (! defined('ABSPATH')) {
 require_once ABSPATH . 'wp-settings.php';
 PHP;
         file_put_contents($dir.'/html/wp-config.php', $config);
+    }
+
+    /**
+     * HTTPS terminiert am Portal-Proxy; im Container ist Apache nur HTTP.
+     * Force-SSL-Regeln aus der Live-Site (WP Fastest Cache, RSSSL, …)
+     * wuerden sonst auf https://127.0.0.1:{port}/ umleiten.
+     */
+    private function neutralizeCloneHtaccess(string $dir): void
+    {
+        $path = $dir.'/html/.htaccess';
+        if (! is_file($path)) {
+            return;
+        }
+        $src = (string) file_get_contents($path);
+        $commentSsl = static function (array $m): string {
+            $lines = preg_split("/\r\n|\n|\r/", $m[0]) ?: [];
+            $out = ['# WWC-Clone: intern HTTP hinter dem Portal-Proxy'];
+            foreach ($lines as $line) {
+                $out[] = $line === '' || str_starts_with(ltrim($line), '#') ? $line : '# '.$line;
+            }
+
+            return implode("\n", $out);
+        };
+        $src = preg_replace_callback(
+            '/RewriteCond\s+%\{HTTPS\}\s*!?=\s*on\s*\n\s*RewriteRule[^\n]*https:\/\/[^\n]*/i',
+            $commentSsl,
+            $src
+        ) ?? $src;
+        $src = preg_replace_callback(
+            '/RewriteCond\s+%\{HTTP:X-Forwarded-Proto\}\s*!https\s*\n\s*RewriteRule[^\n]*https:\/\/[^\n]*/i',
+            $commentSsl,
+            $src
+        ) ?? $src;
+        file_put_contents($path, $src);
     }
 
     private function writeGuardMuPlugin(string $dir): void
@@ -837,22 +900,38 @@ YAML;
 
     private function wp(string $dir, string $project, array $args, bool $allowFailure = false): string
     {
-        return $this->docker($dir, ['compose', '-p', $project, 'run', '--rm', 'cli', 'wp', ...$args], 300, $allowFailure);
+        return $this->docker($dir, [
+            'compose', '-p', $project, 'run', '--rm', '--no-deps',
+            'cli', 'wp', '--skip-plugins', '--skip-themes', ...$args,
+        ], 300, $allowFailure);
     }
 
     private function waitForWordPress(string $dir, string $project): void
     {
         $deadline = time() + 180;
+        $lastError = '';
         do {
-            $process = new Process(['docker', 'compose', '-p', $project, 'run', '--rm', 'cli', 'wp', 'core', 'is-installed'], $dir, null, null, 60);
+            $process = new Process(
+                [
+                    'docker', 'compose', '-p', $project, 'run', '--rm', '--no-deps',
+                    'cli', 'wp', '--skip-plugins', '--skip-themes', 'core', 'is-installed',
+                ],
+                $dir,
+                null,
+                null,
+                60
+            );
             $process->run();
             if ($process->isSuccessful()) {
                 return;
             }
+            $lastError = trim($process->getErrorOutput() ?: $process->getOutput());
             sleep(5);
         } while (time() < $deadline);
 
-        throw new RuntimeException('WordPress im Clone antwortet nicht (Datenbank-Import fehlgeschlagen?).');
+        throw new RuntimeException(
+            'WordPress im Clone antwortet nicht: '.mb_substr($lastError !== '' ? $lastError : 'wp core is-installed ohne Ausgabe', -400)
+        );
     }
 
     // ---------------------------------------------------------------
@@ -883,10 +962,14 @@ if (! class_exists('WWC_Agent_Site_Intel')) {
     require_once __DIR__ . '/wwc-site-intel-lib.php';
 }
 PHP);
-        file_put_contents($mu.'/wwc-intel-run.php', <<<'PHP'
+        // Der Runner darf NICHT in mu-plugins liegen: WordPress laedt jede
+        // PHP-Datei dort bei jedem Bootstrap (inkl. `wp core is-installed`)
+        // und wuerde sonst sofort scan() ausfuehren, bevor $wp_rewrite da ist.
+        @unlink($mu.'/wwc-intel-run.php');
+        file_put_contents($dir.'/html/wp-content/wwc-intel-run.php', <<<'PHP'
 <?php
 if (! class_exists('WWC_Agent_Site_Intel')) {
-    require_once __DIR__ . '/wwc-site-intel-lib.php';
+    require_once WP_CONTENT_DIR . '/mu-plugins/wwc-site-intel-lib.php';
 }
 $mode = (isset($args[0]) && is_string($args[0])) ? $args[0] : 'scan';
 if ($mode === 'apply') {
@@ -904,7 +987,7 @@ PHP);
         $out = $this->wp(
             $this->cloneDir($site),
             $this->projectName($site),
-            ['eval-file', '/var/www/html/wp-content/mu-plugins/wwc-intel-run.php', 'scan']
+            ['eval-file', '/var/www/html/wp-content/wwc-intel-run.php', 'scan']
         );
         $json = $this->decodeWpJson($out);
         if (! is_array($json) || empty($json['ok'])) {
@@ -926,7 +1009,7 @@ PHP);
         file_put_contents($opsPath, json_encode($ops, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         try {
             $out = $this->wp($dir, $this->projectName($site), [
-                'eval-file', '/var/www/html/wp-content/mu-plugins/wwc-intel-run.php', 'apply',
+                'eval-file', '/var/www/html/wp-content/wwc-intel-run.php', 'apply',
             ]);
         } finally {
             @unlink($opsPath);
