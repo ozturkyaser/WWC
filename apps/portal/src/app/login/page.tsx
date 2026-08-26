@@ -7,7 +7,7 @@ import { api, setToken } from "@/lib/api";
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("admin@wwc.local");
-  const [password, setPassword] = useState("password");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState("");
@@ -86,7 +86,7 @@ export default function LoginPage() {
         </div>
         <div className="field">
           <label htmlFor="password">Passwort</label>
-          <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </div>
         {needsCode && (
           <div className="field">

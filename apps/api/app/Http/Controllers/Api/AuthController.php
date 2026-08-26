@@ -67,6 +67,8 @@ class AuthController extends Controller
             'password' => 'required|string',
             'code' => 'nullable|string|max:32',
         ]);
+        $data['email'] = trim($data['email']);
+        $data['password'] = trim($data['password']);
 
         $user = User::where('email', $data['email'])->first();
         if (! $user || ! Hash::check($data['password'], $user->password)) {
@@ -212,6 +214,8 @@ class AuthController extends Controller
             'current_password' => 'required|string',
             'password' => 'required|string|min:8|confirmed|different:current_password',
         ]);
+        $data['current_password'] = trim($data['current_password']);
+        $data['password'] = trim($data['password']);
 
         $user = $request->user();
         if (! Hash::check($data['current_password'], $user->password)) {
