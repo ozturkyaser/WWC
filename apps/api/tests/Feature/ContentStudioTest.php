@@ -250,4 +250,44 @@ class ContentStudioTest extends TestCase
             ->postJson('/api/sites/'.$this->site->id.'/content-studio/target', ['target' => 'clone'])
             ->assertStatus(422);
     }
+
+    public function test_sanitize_allows_delete_post_for_undo(): void
+    {
+        $ops = app(ContentStudioService::class)->sanitizeOps([
+            ['op' => 'delete_post', 'id' => 12],
+            ['op' => 'delete_post', 'id' => 0],
+        ]);
+        $this->assertCount(1, $ops);
+        $this->assertSame('delete_post', $ops[0]['op']);
+        $this->assertSame(12, $ops[0]['id']);
+    }
+
+    public function test_undo_is_built_from_apply_results(): void
+    {
+        $svc = app(ContentStudioService::class);
+        $draft = $svc->attachUndoAndDetails([
+            'ops' => [
+                ['op' => 'create_post', 'type' => 'page', 'title' => 'Neu', 'content' => '<p>Hi</p>'],
+                ['op' => 'plugin_deactivate', 'slug' => 'autoptimize'],
+                ['op' => 'plugin_update', 'slug' => 'akismet'],
+            ],
+        ], [
+            ['ok' => true, 'index' => 0, 'op' => 'create_post', 'id' => 44, 'undo' => ['op' => 'delete_post', 'id' => 44]],
+            ['ok' => true, 'index' => 1, 'op' => 'plugin_deactivate', 'slug' => 'autoptimize', 'undo' => ['op' => 'plugin_activate', 'slug' => 'autoptimize']],
+            ['ok' => true, 'index' => 2, 'op' => 'plugin_update', 'slug' => 'akismet', 'undoable' => false],
+        ], 'clone');
+
+        $this->assertTrue($draft['undoable']);
+        $this->assertSame('plugin_activate', $draft['undo_ops'][0]['op']);
+        $this->assertSame('delete_post', $draft['undo_ops'][1]['op']);
+        $this->assertCount(3, $draft['details']);
+        $this->assertSame('Neue Seite/Beitrag', $draft['details'][0]['label']);
+    }
+
+    public function test_undo_requires_applied_change(): void
+    {
+        $this->withToken($this->token)
+            ->postJson('/api/sites/'.$this->site->id.'/content-studio/undo')
+            ->assertStatus(422);
+    }
 }

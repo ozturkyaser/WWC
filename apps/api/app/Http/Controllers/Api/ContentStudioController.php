@@ -124,6 +124,25 @@ class ContentStudioController extends Controller
         return response()->json(['data' => $data], 202);
     }
 
+    public function undo(Request $request, string $id, ContentStudioService $studio)
+    {
+        $site = $this->site($request, $id);
+        $data = $request->validate([
+            'confirm_live' => 'nullable|boolean',
+            'at' => 'nullable|string|max:80',
+        ]);
+        try {
+            $payload = $studio->undo($site, (bool) ($data['confirm_live'] ?? false), $data['at'] ?? null);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        AuditLogger::log('site.content.undo', $request->attributes->get('organization_id'), $request->user(), $site->id, [
+            'at' => $data['at'] ?? null,
+        ], $request);
+
+        return response()->json(['data' => $payload]);
+    }
+
     public function promote(Request $request, string $id, ContentStudioService $studio)
     {
         $site = $this->site($request, $id);

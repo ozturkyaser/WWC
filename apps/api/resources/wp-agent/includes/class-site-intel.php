@@ -165,6 +165,7 @@ final class WWC_Agent_Site_Intel
         return match ($name) {
             'create_post' => self::create_post($op),
             'update_post' => self::update_post($op),
+            'delete_post' => self::delete_post($op),
             'set_option' => self::set_option($op),
             'set_logo' => self::set_logo($op),
             'upload_media' => self::upload_media($op),
@@ -201,7 +202,22 @@ final class WWC_Agent_Site_Intel
             return ['ok' => false, 'error' => $id->get_error_message()];
         }
 
-        return ['ok' => true, 'id' => (int) $id, 'url' => (string) get_permalink($id)];
+        $status = in_array($op['status'] ?? 'publish', ['publish', 'draft', 'private'], true) ? $op['status'] : 'publish';
+
+        return [
+            'ok' => true,
+            'id' => (int) $id,
+            'url' => (string) get_permalink($id),
+            'title' => $title,
+            'type' => $type,
+            'status' => $status,
+            'after' => [
+                'title' => $title,
+                'status' => $status,
+                'content' => self::clip((string) ($op['content'] ?? ''), 700, true),
+            ],
+            'undo' => ['op' => 'delete_post', 'id' => (int) $id],
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -215,6 +231,19 @@ final class WWC_Agent_Site_Intel
         if (self::is_builder_owned($post) && array_key_exists('content', $op)) {
             return ['ok' => false, 'error' => 'Seite läuft über einen Page-Builder – Inhalt nicht als HTML überschreiben. Titel/Status gehen, oder neue Gutenberg-Seite anlegen.'];
         }
+        $undo = [
+            'op' => 'update_post',
+            'id' => $id,
+            'title' => (string) $post->post_title,
+            'content' => (string) $post->post_content,
+            'excerpt' => (string) $post->post_excerpt,
+            'status' => (string) $post->post_status,
+        ];
+        $before = [
+            'title' => (string) $post->post_title,
+            'status' => (string) $post->post_status,
+            'content' => self::clip((string) $post->post_content, 700, true),
+        ];
         $data = ['ID' => $id];
         if (isset($op['title'])) {
             $data['post_title'] = (string) $op['title'];
@@ -232,8 +261,43 @@ final class WWC_Agent_Site_Intel
         if (is_wp_error($updated)) {
             return ['ok' => false, 'error' => $updated->get_error_message()];
         }
+        $fresh = get_post($id);
 
-        return ['ok' => true, 'id' => $id, 'url' => (string) get_permalink($id)];
+        return [
+            'ok' => true,
+            'id' => $id,
+            'url' => (string) get_permalink($id),
+            'title' => $fresh instanceof WP_Post ? (string) $fresh->post_title : (string) ($op['title'] ?? $post->post_title),
+            'before' => $before,
+            'after' => [
+                'title' => $fresh instanceof WP_Post ? (string) $fresh->post_title : '',
+                'status' => $fresh instanceof WP_Post ? (string) $fresh->post_status : '',
+                'content' => self::clip($fresh instanceof WP_Post ? (string) $fresh->post_content : '', 700, true),
+            ],
+            'undo' => $undo,
+        ];
+    }
+
+    /** @param array<string, mixed> $op */
+    private static function delete_post(array $op): array
+    {
+        $id = (int) ($op['id'] ?? 0);
+        $post = $id > 0 ? get_post($id) : null;
+        if (! $post instanceof WP_Post) {
+            return ['ok' => false, 'error' => 'Beitrag nicht gefunden'];
+        }
+        $trashed = wp_trash_post($id);
+        if (! $trashed) {
+            return ['ok' => false, 'error' => 'Konnte nicht in den Papierkorb legen'];
+        }
+
+        return [
+            'ok' => true,
+            'id' => $id,
+            'title' => (string) $post->post_title,
+            'before' => ['title' => (string) $post->post_title, 'status' => (string) $post->post_status],
+            'after' => ['status' => 'trash'],
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -243,14 +307,22 @@ final class WWC_Agent_Site_Intel
         if (! in_array($key, self::OPTION_ALLOWLIST, true)) {
             return ['ok' => false, 'error' => 'Option nicht erlaubt: '.$key];
         }
+        $old = get_option($key);
         update_option($key, $op['value'] ?? '');
 
-        return ['ok' => true];
+        return [
+            'ok' => true,
+            'key' => $key,
+            'before' => ['value' => $old],
+            'after' => ['value' => $op['value'] ?? ''],
+            'undo' => ['op' => 'set_option', 'key' => $key, 'value' => $old],
+        ];
     }
 
     /** @param array<string, mixed> $op */
     private static function set_logo(array $op): array
     {
+        $oldId = (int) get_theme_mod('custom_logo');
         $mediaId = (int) ($op['media_id'] ?? 0);
         if ($mediaId <= 0 && ! empty($op['path']) && is_readable((string) $op['path'])) {
             $uploaded = self::sideload_file((string) $op['path'], (string) ($op['title'] ?? 'Logo'));
@@ -260,11 +332,28 @@ final class WWC_Agent_Site_Intel
             $mediaId = (int) $uploaded['id'];
         }
         if ($mediaId <= 0) {
-            return ['ok' => false, 'error' => 'Kein Logo (media_id oder path)'];
+            remove_theme_mod('custom_logo');
+
+            return [
+                'ok' => true,
+                'id' => 0,
+                'before' => ['media_id' => $oldId, 'url' => $oldId ? (string) wp_get_attachment_url($oldId) : null],
+                'after' => ['media_id' => 0],
+                'undo' => $oldId > 0 ? ['op' => 'set_logo', 'media_id' => $oldId] : null,
+            ];
         }
         set_theme_mod('custom_logo', $mediaId);
 
-        return ['ok' => true, 'id' => $mediaId, 'url' => (string) wp_get_attachment_url($mediaId)];
+        return [
+            'ok' => true,
+            'id' => $mediaId,
+            'url' => (string) wp_get_attachment_url($mediaId),
+            'before' => ['media_id' => $oldId, 'url' => $oldId ? (string) wp_get_attachment_url($oldId) : null],
+            'after' => ['media_id' => $mediaId, 'url' => (string) wp_get_attachment_url($mediaId)],
+            'undo' => $oldId > 0
+                ? ['op' => 'set_logo', 'media_id' => $oldId]
+                : ['op' => 'set_logo', 'media_id' => 0],
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -306,7 +395,13 @@ final class WWC_Agent_Site_Intel
             deactivate_plugins($file, false, false);
         }
 
-        return ['ok' => true, 'slug' => $slug];
+        return [
+            'ok' => true,
+            'slug' => $slug,
+            'before' => ['active' => ! $activate],
+            'after' => ['active' => $activate],
+            'undo' => ['op' => $activate ? 'plugin_deactivate' : 'plugin_activate', 'slug' => $slug],
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -331,7 +426,12 @@ final class WWC_Agent_Site_Intel
             return ['ok' => false, 'error' => 'Kein Plugin-Update verfügbar oder fehlgeschlagen'];
         }
 
-        return ['ok' => true, 'slug' => $slug];
+        return [
+            'ok' => true,
+            'slug' => $slug,
+            'note' => 'Plugin-Updates lassen sich nicht automatisch zurücksetzen.',
+            'undoable' => false,
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -355,7 +455,12 @@ final class WWC_Agent_Site_Intel
             return ['ok' => false, 'error' => 'Kein Theme-Update verfügbar oder fehlgeschlagen'];
         }
 
-        return ['ok' => true, 'slug' => $slug];
+        return [
+            'ok' => true,
+            'slug' => $slug,
+            'note' => 'Theme-Updates lassen sich nicht automatisch zurücksetzen.',
+            'undoable' => false,
+        ];
     }
 
     private static function plugin_file_from_slug(string $slug): ?string
@@ -374,13 +479,19 @@ final class WWC_Agent_Site_Intel
     /** @param array<string, mixed> $op */
     private static function set_custom_css(array $op): array
     {
+        $old = (string) wp_get_custom_css();
         $css = (string) ($op['css'] ?? $op['value'] ?? '');
         $result = wp_update_custom_css_post($css);
         if (is_wp_error($result)) {
             return ['ok' => false, 'error' => $result->get_error_message()];
         }
 
-        return ['ok' => true];
+        return [
+            'ok' => true,
+            'before' => ['css' => self::clip($old)],
+            'after' => ['css' => self::clip($css)],
+            'undo' => ['op' => 'set_custom_css', 'css' => $old],
+        ];
     }
 
     /** @param array<string, mixed> $op */
@@ -408,11 +519,32 @@ final class WWC_Agent_Site_Intel
         if ($parentReal === false || ! str_starts_with($parentReal, $root)) {
             return ['ok' => false, 'error' => 'Pfad außerhalb des Themes'];
         }
-        if (file_put_contents($full, (string) ($op['content'] ?? '')) === false) {
+        $existed = is_file($full);
+        $old = $existed ? (string) file_get_contents($full) : '';
+        $new = (string) ($op['content'] ?? '');
+        if (file_put_contents($full, $new) === false) {
             return ['ok' => false, 'error' => 'Datei nicht schreibbar'];
         }
 
-        return ['ok' => true, 'path' => $rel];
+        return [
+            'ok' => true,
+            'path' => $rel,
+            'before' => ['content' => self::clip($old)],
+            'after' => ['content' => self::clip($new)],
+            'undo' => $existed ? ['op' => 'update_theme_file', 'path' => $rel, 'content' => $old] : null,
+        ];
+    }
+
+    private static function clip(string $value, int $limit = 700, bool $stripTags = false): string
+    {
+        if ($stripTags) {
+            $value = trim(wp_strip_all_tags($value));
+        }
+        if (mb_strlen($value) <= $limit) {
+            return $value;
+        }
+
+        return mb_substr($value, 0, $limit).'…';
     }
 
     /** @return array{ok:bool,id?:int,url?:string,error?:string} */

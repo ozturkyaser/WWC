@@ -27,12 +27,17 @@ class ContentStudioService
         $studio = $site->content_studio ?? [];
         $intel = $studio['intel'] ?? null;
         $target = $this->storedTarget($site);
+        $draft = $studio['draft'] ?? null;
+        if (is_array($draft) && empty($draft['details']) && ! empty($draft['ops']) && is_array($draft['ops'])) {
+            $results = $draft['dev_results'] ?? $draft['live_results'] ?? [];
+            $draft['details'] = $this->describeChanges($draft['ops'], is_array($results) ? $results : []);
+        }
 
         return [
             'intel' => $intel,
             'intel_source' => $studio['intel_source'] ?? null,
             'scanned_at' => $studio['scanned_at'] ?? null,
-            'draft' => $studio['draft'] ?? null,
+            'draft' => $draft,
             'history' => array_slice($studio['history'] ?? [], 0, 10),
             'target' => $target,
             'live_paired' => (bool) $site->getHmacSecret(),
@@ -160,10 +165,13 @@ class ContentStudioService
             'prompt' => $prompt,
             'summary' => $planned['summary'] ?? 'Geplante Änderungen.',
             'ops' => $ops,
+            'details' => $this->describeChanges($ops, []),
             'status' => 'planned',
             'target' => $target,
             'dev_results' => null,
             'live_results' => null,
+            'undo_ops' => [],
+            'undoable' => false,
             'error' => null,
             'planned_at' => now()->toIso8601String(),
         ];
@@ -185,8 +193,10 @@ class ContentStudioService
         $result = $this->clones->applyOnClone($site, $draft['ops']);
         $ok = (bool) ($result['ok'] ?? false);
         $draft['dev_results'] = $this->publicizeResults($site, $result['results'] ?? []);
+        $draft = $this->attachUndoAndDetails($draft, $draft['dev_results'], 'clone');
         $draft['status'] = $ok ? 'applied_dev' : 'failed';
         $draft['target'] = 'clone';
+        $draft['undoing'] = false;
         $draft['error'] = $ok
             ? null
             : ($this->firstResultError($draft['dev_results']) ?? 'Mindestens eine Änderung in der isolierten Kopie ist fehlgeschlagen.');
@@ -200,6 +210,56 @@ class ContentStudioService
                 $this->storeIntel($site->fresh() ?? $site, $intel, 'clone');
             } catch (\Throwable $e) {
                 Log::info('content studio rescan skipped', ['error' => $e->getMessage()]);
+            }
+        }
+
+        return $this->payload($site->fresh() ?? $site);
+    }
+
+    public function undo(Site $site, bool $confirmLive = false, ?string $at = null): array
+    {
+        [$draft, $fromHistory] = $this->undoSource($site, $at);
+        $target = (string) ($draft['target'] ?? 'clone');
+        $ops = $this->sanitizeOps($draft['undo_ops'] ?? [], $target === 'live' ? 'live' : 'clone');
+        if ($ops === []) {
+            throw new RuntimeException('Diese Änderung kann nicht automatisch rückgängig gemacht werden (z. B. Plugin-/Theme-Update).');
+        }
+        if (in_array((string) ($draft['status'] ?? ''), ['undone', 'undoing'], true)) {
+            throw new RuntimeException('Diese Änderung wurde bereits rückgängig gemacht.');
+        }
+        if ($target === 'live') {
+            if (! $confirmLive) {
+                throw new RuntimeException('Live-Rücknahme braucht eine ausdrückliche Bestätigung.');
+            }
+            if (! $site->getHmacSecret()) {
+                throw new RuntimeException('Live-Site ist nicht verbunden.');
+            }
+            $job = $this->dispatcher->dispatch($site, 'content_apply', ['ops' => $ops]);
+            $draft['status'] = 'undoing';
+            $draft['undoing'] = true;
+            $draft['live_job_id'] = $job->id;
+            $this->writeUndoSource($site, $draft, $fromHistory);
+
+            return $this->payload($site->fresh() ?? $site);
+        }
+        if (! $this->clones->isReady($site)) {
+            throw new RuntimeException('Isolierte Kopie ist nicht bereit.');
+        }
+        $result = $this->clones->applyOnClone($site, $ops);
+        $ok = (bool) ($result['ok'] ?? false);
+        $draft['undo_results'] = $this->publicizeResults($site, $result['results'] ?? []);
+        $draft['status'] = $ok ? 'undone' : 'failed';
+        $draft['undoable'] = false;
+        $draft['undoing'] = false;
+        $draft['error'] = $ok ? null : ($this->firstResultError($draft['undo_results']) ?? 'Rückgängig machen ist fehlgeschlagen.');
+        $draft['undone_at'] = now()->toIso8601String();
+        $this->writeUndoSource($site, $draft, $fromHistory);
+        if ($ok) {
+            try {
+                $intel = $this->clones->scanClone($site);
+                $this->storeIntel($site->fresh() ?? $site, $intel, 'clone');
+            } catch (\Throwable $e) {
+                Log::info('content studio undo rescan skipped', ['error' => $e->getMessage()]);
             }
         }
 
@@ -248,10 +308,24 @@ class ContentStudioService
         $studio = $site->content_studio ?? [];
         $draft = $studio['draft'] ?? [];
         $draft['live_results'] = $result['results'] ?? $result;
+        if (! empty($draft['undoing'])) {
+            $draft['status'] = $ok ? 'undone' : 'failed';
+            $draft['undoable'] = false;
+            $draft['undo_results'] = $draft['live_results'];
+            $draft['error'] = $ok ? null : (string) ($result['error'] ?? 'Rückgängig machen auf Live fehlgeschlagen');
+            $draft['undone_at'] = now()->toIso8601String();
+            $draft['undoing'] = false;
+            $this->patchStudio($site, ['draft' => $draft]);
+            $this->rememberHistory($site->fresh() ?? $site, $draft);
+
+            return;
+        }
+        $draft = $this->attachUndoAndDetails($draft, is_array($draft['live_results']) ? $draft['live_results'] : [], 'live');
         $draft['status'] = $ok ? 'promoted' : 'failed';
         $draft['error'] = $ok ? null : (string) ($result['error'] ?? 'Live-Übernahme fehlgeschlagen');
         $draft['promoted_at'] = now()->toIso8601String();
         $this->patchStudio($site, ['draft' => $draft]);
+        $this->rememberHistory($site->fresh() ?? $site, $draft);
 
         $org = $site->organization;
         if ($org && $ok) {
@@ -618,6 +692,10 @@ class ContentStudioService
                     'op' => 'set_custom_css',
                     'css' => mb_substr((string) ($op['css'] ?? $op['value'] ?? ''), 0, 80000),
                 ],
+                'delete_post' => [
+                    'op' => 'delete_post',
+                    'id' => (int) ($op['id'] ?? 0),
+                ],
                 'update_theme_file' => $target === 'clone' ? [
                     'op' => 'update_theme_file',
                     'path' => ltrim(str_replace('\\', '/', (string) ($op['path'] ?? '')), '/'),
@@ -629,6 +707,9 @@ class ContentStudioService
                 continue;
             }
             if ($name === 'create_post' && $row['title'] === '') {
+                continue;
+            }
+            if ($name === 'delete_post' && $row['id'] <= 0) {
                 continue;
             }
             if ($name === 'update_post' && $row['id'] <= 0) {
@@ -706,9 +787,14 @@ class ContentStudioService
             'summary' => $draft['summary'] ?? '',
             'status' => $draft['status'] ?? '',
             'target' => $draft['target'] ?? null,
+            'ops' => $draft['ops'] ?? [],
+            'details' => $draft['details'] ?? [],
             'dev_results' => $draft['dev_results'] ?? [],
+            'live_results' => $draft['live_results'] ?? [],
+            'undo_ops' => $draft['undo_ops'] ?? [],
+            'undoable' => (bool) ($draft['undoable'] ?? false),
             'error' => $draft['error'] ?? null,
-            'at' => $draft['applied_dev_at'] ?? $draft['promoted_at'] ?? now()->toIso8601String(),
+            'at' => $draft['applied_dev_at'] ?? $draft['promoted_at'] ?? $draft['undone_at'] ?? now()->toIso8601String(),
         ]);
         $this->patchStudio($site, ['history' => array_slice($history, 0, 10)]);
     }
@@ -723,5 +809,207 @@ class ContentStudioService
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $draft
+     * @param  list<array<string, mixed>>  $results
+     * @return array<string, mixed>
+     */
+    public function attachUndoAndDetails(array $draft, array $results, string $target): array
+    {
+        $ops = is_array($draft['ops'] ?? null) ? $draft['ops'] : [];
+        $undo = [];
+        foreach ($results as $i => $row) {
+            if (! is_array($row) || empty($row['ok'])) {
+                continue;
+            }
+            $op = is_array($ops[$i] ?? null) ? $ops[$i] : (is_array($ops[$row['index'] ?? -1] ?? null) ? $ops[$row['index']] : []);
+            $reverse = $this->synthesizeUndo($op, $row, $target);
+            if ($reverse !== null) {
+                $undo[] = $reverse;
+            }
+        }
+        $draft['undo_ops'] = array_reverse($undo);
+        $draft['undoable'] = $undo !== [];
+        $draft['details'] = $this->describeChanges($ops, $results);
+
+        return $draft;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $ops
+     * @param  list<array<string, mixed>>  $results
+     * @return list<array<string, mixed>>
+     */
+    public function describeChanges(array $ops, array $results): array
+    {
+        $labels = [
+            'create_post' => 'Neue Seite/Beitrag',
+            'update_post' => 'Seite/Beitrag angepasst',
+            'delete_post' => 'In den Papierkorb',
+            'set_option' => 'Einstellung',
+            'set_logo' => 'Logo',
+            'upload_media' => 'Datei hochgeladen',
+            'plugin_activate' => 'Plugin aktiviert',
+            'plugin_deactivate' => 'Plugin deaktiviert',
+            'plugin_update' => 'Plugin aktualisiert',
+            'theme_update' => 'Theme aktualisiert',
+            'set_custom_css' => 'Custom-CSS',
+            'update_theme_file' => 'Theme-Datei',
+        ];
+        $optionNames = [
+            'blogname' => 'Sitename',
+            'blogdescription' => 'Untertitel',
+            'show_on_front' => 'Startseite zeigt',
+            'page_on_front' => 'Startseite',
+            'page_for_posts' => 'Beitragsseite',
+            'posts_per_page' => 'Beiträge pro Seite',
+        ];
+        $out = [];
+        foreach ($ops as $i => $op) {
+            if (! is_array($op)) {
+                continue;
+            }
+            $row = [];
+            foreach ($results as $res) {
+                if (is_array($res) && (int) ($res['index'] ?? $i) === $i && ($res['op'] ?? '') === ($op['op'] ?? '')) {
+                    $row = $res;
+                    break;
+                }
+            }
+            if ($row === [] && isset($results[$i]) && is_array($results[$i])) {
+                $row = $results[$i];
+            }
+            $name = (string) ($op['op'] ?? '');
+            $before = is_array($row['before'] ?? null) ? $row['before'] : [];
+            $after = is_array($row['after'] ?? null) ? $row['after'] : [];
+            $fields = [];
+            if ($name === 'set_option') {
+                $fields[] = [
+                    'name' => $optionNames[(string) ($op['key'] ?? '')] ?? (string) ($op['key'] ?? 'Option'),
+                    'before' => $before['value'] ?? null,
+                    'after' => $after['value'] ?? ($op['value'] ?? null),
+                ];
+            }
+            foreach (['title' => 'Titel', 'status' => 'Status', 'css' => 'CSS', 'content' => 'Inhalt', 'active' => 'Aktiv'] as $key => $label) {
+                $b = $before[$key] ?? null;
+                $a = $after[$key] ?? $op[$key] ?? null;
+                if ($key === 'active') {
+                    $b = $b === null ? null : ($b ? 'ja' : 'nein');
+                    $a = $a === null ? null : (($a === true || $a === 'ja') ? 'ja' : 'nein');
+                }
+                if ($a === null && $b === null) {
+                    continue;
+                }
+                if (is_string($a) && mb_strlen($a) > 500) {
+                    $a = mb_substr($a, 0, 500).'…';
+                }
+                if (is_string($b) && mb_strlen($b) > 500) {
+                    $b = mb_substr($b, 0, 500).'…';
+                }
+                $fields[] = ['name' => $label, 'before' => $b, 'after' => $a];
+            }
+            if ($name === 'update_theme_file' && ! empty($op['path'])) {
+                $fields[] = ['name' => 'Datei', 'before' => null, 'after' => $op['path']];
+            }
+            $out[] = [
+                'op' => $name,
+                'label' => $labels[$name] ?? $name,
+                'ok' => $results === [] ? null : (bool) ($row['ok'] ?? false),
+                'title' => $row['title'] ?? $op['title'] ?? $op['slug'] ?? $op['path'] ?? $op['key'] ?? null,
+                'url' => $row['url'] ?? null,
+                'id' => $row['id'] ?? $op['id'] ?? null,
+                'slug' => $op['slug'] ?? $row['slug'] ?? null,
+                'note' => $row['note'] ?? $row['error'] ?? null,
+                'undoable' => isset($row['undo']) || ! in_array($name, ['plugin_update', 'theme_update'], true),
+                'fields' => $fields,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<string, mixed>  $op
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>|null
+     */
+    public function synthesizeUndo(array $op, array $result, string $target): ?array
+    {
+        if (isset($result['undoable']) && $result['undoable'] === false) {
+            return null;
+        }
+        if (isset($result['undo']) && is_array($result['undo'])) {
+            $clean = $this->sanitizeOps([$result['undo']], $target);
+
+            return $clean[0] ?? null;
+        }
+        $name = (string) ($op['op'] ?? $result['op'] ?? '');
+
+        return match ($name) {
+            'create_post' => ! empty($result['id']) ? ['op' => 'delete_post', 'id' => (int) $result['id']] : null,
+            'plugin_activate' => ['op' => 'plugin_deactivate', 'slug' => (string) ($op['slug'] ?? $result['slug'] ?? '')],
+            'plugin_deactivate' => ['op' => 'plugin_activate', 'slug' => (string) ($op['slug'] ?? $result['slug'] ?? '')],
+            'set_option' => isset($result['before']['value'])
+                ? ['op' => 'set_option', 'key' => (string) ($op['key'] ?? $result['key'] ?? ''), 'value' => $result['before']['value']]
+                : null,
+            default => null,
+        };
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: bool}
+     */
+    private function undoSource(Site $site, ?string $at): array
+    {
+        $studio = $site->content_studio ?? [];
+        $draft = $studio['draft'] ?? [];
+        if (! is_array($draft)) {
+            $draft = [];
+        }
+        if ($at === null || $at === '' || (($draft['applied_dev_at'] ?? $draft['promoted_at'] ?? '') === $at)) {
+            if (($draft['undo_ops'] ?? []) === [] && ($draft['ops'] ?? []) !== []) {
+                $results = $draft['dev_results'] ?? $draft['live_results'] ?? [];
+                $draft = $this->attachUndoAndDetails($draft, is_array($results) ? $results : [], (string) ($draft['target'] ?? 'clone'));
+            }
+
+            return [$draft, false];
+        }
+        foreach ($studio['history'] ?? [] as $item) {
+            if (is_array($item) && ($item['at'] ?? '') === $at) {
+                return [$item, true];
+            }
+        }
+
+        throw new RuntimeException('Dieser Auftrag wurde nicht gefunden.');
+    }
+
+    /**
+     * @param  array<string, mixed>  $draft
+     */
+    private function writeUndoSource(Site $site, array $draft, bool $fromHistory): void
+    {
+        if (! $fromHistory) {
+            $this->patchStudio($site, ['draft' => $draft]);
+            $this->rememberHistory($site->fresh() ?? $site, $draft);
+
+            return;
+        }
+        $history = $site->content_studio['history'] ?? [];
+        foreach ($history as $i => $item) {
+            if (is_array($item) && ($item['at'] ?? null) === ($draft['at'] ?? null)) {
+                $history[$i] = array_merge($item, [
+                    'status' => $draft['status'] ?? $item['status'] ?? '',
+                    'undoable' => false,
+                    'error' => $draft['error'] ?? null,
+                ]);
+            }
+        }
+        $this->patchStudio($site, ['history' => $history]);
+        $current = $site->fresh()->content_studio['draft'] ?? [];
+        if (($current['applied_dev_at'] ?? $current['promoted_at'] ?? null) === ($draft['at'] ?? 'x')) {
+            $this->patchStudio($site->fresh() ?? $site, ['draft' => array_merge($current, $draft)]);
+        }
     }
 }

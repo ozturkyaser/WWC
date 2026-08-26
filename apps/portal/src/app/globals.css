@@ -680,6 +680,28 @@ select, input[type="text"], input[type="email"], input[type="url"], input[type="
 }
 .segmented button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.change-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.change-card pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-height: 140px;
+  overflow: auto;
+}
+.change-field {
+  margin-top: 8px;
+  font-size: 0.82rem;
+}
+.change-field .muted { font-size: 0.75rem; }
+
 .process-log-pct { color: var(--accent); font-variant-numeric: tabular-nums; }
 .process-log-msg { color: rgba(230, 236, 242, 0.92); word-break: break-word; }
 .process-log-time { opacity: 0.65; white-space: nowrap; }

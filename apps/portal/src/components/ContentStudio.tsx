@@ -18,6 +18,19 @@ type Intel = {
   counts?: { pages?: number; posts?: number; plugins_active?: number; plugins_total?: number };
 };
 
+type DetailField = { name: string; before?: string | number | null; after?: string | number | null };
+
+type Detail = {
+  op?: string;
+  label?: string;
+  ok?: boolean | null;
+  title?: string | number | null;
+  url?: string | null;
+  note?: string | null;
+  undoable?: boolean;
+  fields?: DetailField[];
+};
+
 type Result = {
   ok?: boolean;
   op?: string;
@@ -28,6 +41,9 @@ type Result = {
   key?: string;
   slug?: string;
   path?: string;
+  note?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
 };
 
 type Draft = {
@@ -36,17 +52,25 @@ type Draft = {
   status?: string;
   target?: string;
   ops?: Array<Record<string, unknown>>;
+  details?: Detail[];
   error?: string | null;
   dev_results?: Result[];
   live_results?: Result[];
+  undo_ops?: Array<Record<string, unknown>>;
+  undoable?: boolean;
+  applied_dev_at?: string;
+  promoted_at?: string;
 };
 
 type HistoryItem = {
   prompt?: string;
   summary?: string;
   status?: string;
+  target?: string;
   error?: string | null;
+  details?: Detail[];
   dev_results?: Result[];
+  undoable?: boolean;
   at?: string;
 };
 
@@ -94,6 +118,69 @@ function opLabel(op: Record<string, unknown> | Result): string {
   return `${map[name] || name}${title ? `: ${title}` : ""}`;
 }
 
+function ChangeList({
+  details,
+  ops,
+  onPreview,
+}: {
+  details: Detail[];
+  ops: Array<Record<string, unknown>>;
+  onPreview: (url: string) => void;
+}) {
+  if (details.length === 0) {
+    return (
+      <>
+        {ops.map((op, i) => (
+          <div key={i} className="cell-sub" style={{ fontSize: "0.82rem" }}>
+            {opLabel(op)}
+          </div>
+        ))}
+      </>
+    );
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      {details.map((d, i) => (
+        <div key={i} className="change-card">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <strong>
+              {d.ok === true && <span className="badge completed">OK</span>}
+              {d.ok === false && <span className="badge failed">Fehler</span>}
+              {d.ok == null && <span className="badge pending">geplant</span>}{" "}
+              {d.label || d.op}
+              {d.title ? `: ${d.title}` : ""}
+            </strong>
+            {d.url && (
+              <span className="row" style={{ gap: 8 }}>
+                <button className="btn secondary sm" type="button" onClick={() => onPreview(d.url || "")}>
+                  Vorschau
+                </button>
+                <a className="btn secondary sm" href={d.url} target="_blank" rel="noreferrer">
+                  Öffnen
+                </a>
+              </span>
+            )}
+          </div>
+          {(d.fields || []).map((f) => (
+            <div key={f.name} className="change-field">
+              <span className="muted">{f.name}</span>
+              {f.before != null && f.after != null && String(f.before) !== String(f.after) ? (
+                <pre>
+                  Vorher: {String(f.before) || "—"}
+                  {"\n"}Nachher: {String(f.after) || "—"}
+                </pre>
+              ) : (
+                <pre>{String(f.after ?? f.before ?? "—")}</pre>
+              )}
+            </div>
+          ))}
+          {d.note && <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>{d.note}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ContentStudio({
   siteId,
   initial,
@@ -115,7 +202,9 @@ export function ContentStudio({
   const previewUrl = preview || results.find((r) => r.ok && r.url)?.url || null;
   const intelMatches = studio.intel_source === target;
   const scanPending = studio.scan_status === "pending";
+  const jobPending = draft?.status === "promoting" || draft?.status === "undoing";
   const targetReady = target === "clone" ? !!studio.clone_ready : !!studio.live_paired;
+  const details = draft?.details || [];
 
   useEffect(() => {
     if (initial) {
@@ -124,26 +213,34 @@ export function ContentStudio({
   }, [initial]);
 
   useEffect(() => {
-    if (!scanPending) {
+    if (!scanPending && !jobPending) {
       return;
     }
     const t = window.setInterval(async () => {
       try {
         const res = await api<{ data: Studio }>(`/sites/${siteId}/content-studio`);
         setStudio(res.data);
-        if (res.data.scan_status === "ready") {
+        if (res.data.scan_status === "ready" && scanPending) {
           setMsg("Scan fertig. Die KI kennt Theme, Plugins und Inhalte.");
           await onRefresh();
         }
         if (res.data.scan_status === "failed") {
           setMsg("Live-Scan fehlgeschlagen. Agent-Version prüfen.");
         }
+        if (res.data.draft?.status === "promoted") {
+          setMsg("Änderung ist live.");
+          await onRefresh();
+        }
+        if (res.data.draft?.status === "undone") {
+          setMsg("Änderung wurde rückgängig gemacht.");
+          await onRefresh();
+        }
       } catch {
         /* nächster Tick */
       }
     }, 2500);
     return () => window.clearInterval(t);
-  }, [scanPending, siteId, onRefresh]);
+  }, [scanPending, jobPending, siteId, onRefresh]);
 
   async function run(path: string, body?: unknown) {
     setBusy(true);
@@ -164,7 +261,10 @@ export function ContentStudio({
         setMsg("Auftrag an den Live-Agenten übergeben.");
       } else if (res.data.scan_status === "pending") {
         setMsg("Live-Scan läuft über den gepaarten Agenten…");
-      } else if (res.data.draft?.error) {
+      } else if (res.data.draft?.status === "undone") {
+        setMsg("Änderung wurde rückgängig gemacht.");
+      } else if (res.data.draft?.status === "undoing") {
+        setMsg("Rücknahme läuft über den Live-Agenten…");
         setMsg(res.data.draft.error);
       } else if (path === "scan" && res.data.intel) {
         setMsg("Scan fertig.");
@@ -381,41 +481,13 @@ export function ContentStudio({
             {draft.status === "applied_dev" && <span className="badge completed">in Kopie</span>}
             {draft.status === "promoted" && <span className="badge completed">live</span>}
             {draft.status === "failed" && <span className="badge failed">fehlgeschlagen</span>}
-            {draft.status === "promoting" && <span className="badge running">wird live übernommen…</span>}
+            {draft.status === "undone" && <span className="badge pending">rückgängig</span>}
+            {draft.status === "undoing" && <span className="badge running">wird rückgängig…</span>}
           </p>
           {draft.prompt && <p className="muted" style={{ marginTop: 0 }}>Auftrag: {draft.prompt}</p>}
           <p className="muted">{draft.summary}</p>
-          {(draft.ops || []).map((op, i) => (
-            <div key={i} className="cell-sub" style={{ fontSize: "0.82rem" }}>
-              {opLabel(op)}
-            </div>
-          ))}
+          <ChangeList details={details} ops={draft.ops || []} onPreview={(url) => setPreview(url)} />
           {draft.error && <div className="error">{draft.error}</div>}
-
-          {results.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <h4 style={{ fontSize: "0.95rem", margin: "0 0 8px" }}>Was geändert wurde</h4>
-              {results.map((row, i) => (
-                <div key={i} className="row" style={{ justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap" }}>
-                  <span>
-                    <span className={`badge ${row.ok ? "completed" : "failed"}`}>{row.ok ? "OK" : "Fehler"}</span>{" "}
-                    {opLabel(row)}
-                    {row.error ? <span className="error"> — {row.error}</span> : null}
-                  </span>
-                  {row.url && (
-                    <span className="row" style={{ gap: 8 }}>
-                      <button className="btn secondary" type="button" onClick={() => setPreview(row.url || null)}>
-                        Vorschau
-                      </button>
-                      <a className="btn secondary" href={row.url} target="_blank" rel="noreferrer">
-                        Öffnen
-                      </a>
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
 
           {previewUrl && target === "clone" && (
             <div style={{ marginTop: 14 }}>
@@ -470,24 +542,52 @@ export function ContentStudio({
                 Nach Prüfung live übernehmen
               </button>
             )}
+            {draft.undoable && (draft.status === "applied_dev" || draft.status === "promoted") && (
+              <button
+                className="btn danger"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  const live = draft.target === "live" || draft.status === "promoted";
+                  if (!confirm(live ? "Diese Live-Änderung wirklich rückgängig machen?" : "Diese Änderung in der isolierten Kopie rückgängig machen?")) {
+                    return;
+                  }
+                  run("undo", { confirm_live: live, at: draft.applied_dev_at || draft.promoted_at || undefined });
+                }}
+              >
+                Rückgängig
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {(studio.history || []).length > 1 && (
+      {(studio.history || []).length > 0 && (
         <div style={{ marginTop: 20 }}>
           <h4 style={{ fontSize: "0.95rem" }}>Letzte Aufträge</h4>
           {(studio.history || []).slice(1).map((item, i) => (
-            <div key={`${item.at || i}`} className="cell-sub" style={{ fontSize: "0.82rem", marginBottom: 6 }}>
-              <span className={`badge ${item.status === "applied_dev" || item.status === "promoted" ? "completed" : item.status === "failed" ? "failed" : "pending"}`}>
-                {item.status === "applied_dev" ? "in Kopie" : item.status === "promoted" ? "live" : item.status || ""}
-              </span>{" "}
-              {item.prompt || item.summary}
-              {(item.dev_results || []).filter((r) => r.url).map((r) => (
-                <a key={r.url} href={r.url} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>
-                  öffnen
-                </a>
-              ))}
+            <div key={`${item.at || i}`} className="change-card">
+              <div>
+                <span className={`badge ${item.status === "applied_dev" || item.status === "promoted" ? "completed" : item.status === "failed" ? "failed" : "pending"}`}>
+                  {item.status === "applied_dev" ? "in Kopie" : item.status === "promoted" ? "live" : item.status === "undone" ? "rückgängig" : item.status || ""}
+                </span>{" "}
+                {item.target === "live" ? "Live" : "Kopie"} · {item.prompt || item.summary}
+              </div>
+              <ChangeList details={item.details || []} ops={[]} onPreview={(url) => setPreview(url)} />
+              {item.undoable && (item.status === "applied_dev" || item.status === "promoted") && (
+                <button
+                  className="btn secondary sm"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    const live = item.target === "live" || item.status === "promoted";
+                    if (!confirm("Diesen Auftrag rückgängig machen?")) return;
+                    run("undo", { confirm_live: live, at: item.at });
+                  }}
+                >
+                  Rückgängig
+                </button>
+              )}
             </div>
           ))}
         </div>

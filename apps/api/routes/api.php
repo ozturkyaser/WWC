@@ -111,6 +111,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/content-studio/apply-dev', [\App\Http\Controllers\Api\ContentStudioController::class, 'applyDev']);
     Route::post('/sites/{id}/content-studio/apply-live', [\App\Http\Controllers\Api\ContentStudioController::class, 'applyLive']);
     Route::post('/sites/{id}/content-studio/promote', [\App\Http\Controllers\Api\ContentStudioController::class, 'promote']);
+    Route::post('/sites/{id}/content-studio/undo', [\App\Http\Controllers\Api\ContentStudioController::class, 'undo']);
     Route::post('/sites/{id}/content-studio/upload', [\App\Http\Controllers\Api\ContentStudioController::class, 'upload']);
     Route::get('/mcp/tools', [\App\Http\Controllers\Api\McpController::class, 'tools']);
     Route::post('/mcp/call', [\App\Http\Controllers\Api\McpController::class, 'call']);
