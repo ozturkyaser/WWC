@@ -9,6 +9,7 @@ ExecStart=/usr/bin/php artisan queue:work database --sleep=1 --tries=1 --timeout
 Restart=always
 RestartSec=5
 User=www-data
+SupplementaryGroups=docker
 
 [Install]
 WantedBy=multi-user.target
