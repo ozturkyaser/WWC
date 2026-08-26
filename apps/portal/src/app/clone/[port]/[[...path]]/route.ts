@@ -78,16 +78,22 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
 function rewriteLocation(location: string, port: number, prefix: string, req: NextRequest): string {
   try {
     const url = new URL(location, `http://127.0.0.1:${port}/`);
-    if (url.port === String(port) || url.hostname === "127.0.0.1" || url.hostname === "localhost") {
-      return `${prefix}${url.pathname}${url.search}${url.hash}`;
+    const isLocal =
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "localhost" ||
+      url.port === String(port);
+    const isPublic = url.hostname === req.nextUrl.hostname;
+    if (!isLocal && !isPublic) {
+      return location;
     }
-    if (url.hostname === req.nextUrl.hostname && url.port && Number(url.port) >= PORT_MIN) {
-      return `${prefix}${url.pathname}${url.search}${url.hash}`;
-    }
+    const path =
+      url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
+        ? url.pathname
+        : `${prefix}${url.pathname}`;
+    return `${path}${url.search}${url.hash}`;
   } catch {
     return location;
   }
-  return location;
 }
 
 function rewriteCookie(cookie: string, prefix: string): string {

@@ -628,6 +628,13 @@ class DevCloneService
 if (!empty(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
     \$_SERVER['HTTPS'] = 'on';
 }
+if (! empty(\$_SERVER['HTTP_X_FORWARDED_HOST'])) {
+    \$wwcHost = trim(explode(',', (string) \$_SERVER['HTTP_X_FORWARDED_HOST'])[0]);
+    if (\$wwcHost !== '') {
+        \$_SERVER['HTTP_HOST'] = \$wwcHost;
+        \$_SERVER['SERVER_NAME'] = preg_replace('/:\\d+\$/', '', \$wwcHost);
+    }
+}
 if (! empty(\$_SERVER['HTTP_X_FORWARDED_PREFIX'])) {
     \$wwcPrefix = rtrim((string) \$_SERVER['HTTP_X_FORWARDED_PREFIX'], '/');
     \$wwcUri = (string) (\$_SERVER['REQUEST_URI'] ?? '/');
