@@ -37,6 +37,7 @@ class AgentJob extends Model
         'security_status',
         'site_scan',
         'content_apply',
+        'apply_clone_promote',
     ];
 
     protected $fillable = [

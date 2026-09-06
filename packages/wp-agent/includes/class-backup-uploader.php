@@ -228,6 +228,11 @@ final class WWC_Agent_Backup_Uploader
         return ['ok' => true, 'downloaded' => true];
     }
 
+    public static function download_signed(string $path, string $target): array
+    {
+        return self::download_to_file($path, $target);
+    }
+
     /**
      * HMAC-signed GET streamed into a file (wp_remote_get with stream option).
      */

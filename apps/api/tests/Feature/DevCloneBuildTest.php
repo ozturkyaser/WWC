@@ -110,6 +110,62 @@ class DevCloneBuildTest extends TestCase
         }
     }
 
+    public function test_media_paths_stay_on_live(): void
+    {
+        $svc = app(DevCloneService::class);
+        $this->assertTrue($svc->isCloneMediaPath('wp-content/uploads/2024/01/foto.jpg'));
+        $this->assertTrue($svc->isCloneMediaPath('wp-content/uploads/film.mp4'));
+        $this->assertFalse($svc->isCloneMediaPath('wp-content/plugins/woo/woo.php'));
+        $this->assertFalse($svc->isCloneMediaPath('wp-content/uploads/index.php'));
+        $this->assertFalse($svc->isCloneMediaPath('wp-content/themes/x/style.css'));
+    }
+
+    public function test_backup_queues_isolated_clone(): void
+    {
+        Queue::fake();
+        [$user, $site] = $this->site();
+        $site->setHmacSecret('secret');
+        $site->paired_at = now();
+        $site->save();
+
+        app(DevCloneService::class)->queueAfterBackup($site);
+
+        Queue::assertPushed(BuildDevCloneJob::class, fn (BuildDevCloneJob $job) => $job->siteId === $site->id);
+        $this->assertSame('building', $site->fresh()->dev_clone['status']);
+    }
+
+    public function test_promote_requires_ready_clone(): void
+    {
+        [$user, $site] = $this->site();
+        $site->setHmacSecret('secret');
+        $site->paired_at = now();
+        $site->save();
+
+        $this->withToken($user->createToken('t')->plainTextToken)
+            ->postJson('/api/sites/'.$site->id.'/dev-clone/promote')
+            ->assertStatus(422);
+    }
+
+    public function test_promote_starts_live_safety_backup(): void
+    {
+        Queue::fake();
+        [$user, $site] = $this->site();
+        $site->setHmacSecret('secret');
+        $site->paired_at = now();
+        $site->dev_clone = ['status' => 'ready', 'url' => 'https://wwc.example/clone/9100'];
+        $site->save();
+
+        $this->withToken($user->createToken('t')->plainTextToken)
+            ->postJson('/api/sites/'.$site->id.'/dev-clone/promote')
+            ->assertStatus(202);
+
+        $this->assertSame('promoting', $site->fresh()->dev_clone['status']);
+        $this->assertDatabaseHas('agent_jobs', [
+            'site_id' => $site->id,
+            'command' => 'backup_incremental',
+        ]);
+    }
+
     public function test_clone_url_keeps_localhost_in_local(): void
     {
         $this->app['env'] = 'local';

@@ -282,6 +282,7 @@ final class WWC_Agent_Rest
             'delete_backup', 'purge_wwc',
             'staging_create', 'staging_destroy', 'staging_status', 'staging_grant_admin',
             'staging_update_plugin', 'staging_update_theme', 'update_batch', 'staging_promote',
+            'apply_clone_promote',
             'security_harden', 'security_status',
             'site_scan', 'content_apply',
         ];

@@ -275,6 +275,27 @@ class AgentIngressController extends Controller
             );
         }
 
+        if (in_array($job->command, ['backup_full', 'backup_incremental'], true)) {
+            $reason = is_array($job->payload) ? (string) ($job->payload['reason'] ?? '') : '';
+            $clones = app(\App\Services\DevCloneService::class);
+            if ($reason === 'pre-promote-clone') {
+                $clones->continuePromoteAfterSafetyBackup(
+                    $site->fresh() ?? $site,
+                    $data['status'] === 'completed',
+                    $data['error'] ?? null
+                );
+            } elseif ($data['status'] === 'completed') {
+                $clones->queueAfterBackup($site->fresh() ?? $site);
+            }
+        }
+        if (in_array($job->command, ['apply_clone_promote'], true) && in_array($data['status'], ['completed', 'failed'], true)) {
+            app(\App\Services\DevCloneService::class)->finishPromote(
+                $site->fresh() ?? $site,
+                $data['status'] === 'completed' && (($data['result']['ok'] ?? true) !== false),
+                $data['error'] ?? ($data['result']['error'] ?? null)
+            );
+        }
+
         if ($data['status'] === 'completed' && in_array($job->command, ['update_plugin', 'update_theme', 'update_core'], true)) {
             $findingId = $job->payload['finding_id'] ?? null;
             if ($findingId) {
@@ -314,6 +335,7 @@ class AgentIngressController extends Controller
             'update_core' => 'WordPress-Core-Update',
             'update_batch' => 'Sammel-Update',
             'self_update' => 'Agent-Update',
+            'apply_clone_promote' => 'Live-Zug aus isolierter Umgebung',
         ];
         if (! isset($labels[$job->command])) {
             return;

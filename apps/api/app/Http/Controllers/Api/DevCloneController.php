@@ -72,15 +72,27 @@ class DevCloneController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    private function cloneBuildIsQueued(string $siteId): bool
+    public function promote(Request $request, string $id, DevCloneService $clones)
     {
-        if (config('queue.default') === 'sync') {
-            return false;
+        $orgId = $request->attributes->get('organization_id');
+        $site = Site::where('organization_id', $orgId)->findOrFail($id);
+
+        if (($site->dev_clone['status'] ?? '') === 'promoting') {
+            return response()->json(['message' => 'Live-Zug läuft bereits.'], 409);
         }
 
-        return \Illuminate\Support\Facades\DB::table('jobs')
-            ->where('payload', 'like', '%BuildDevCloneJob%')
-            ->where('payload', 'like', '%'.$siteId.'%')
-            ->exists();
+        try {
+            $clones->startPromote($site);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        AuditLogger::log('site.dev_clone.promote', $orgId, $request->user(), $site->id, [], $request);
+
+        return response()->json(['data' => $clones->payload($site->fresh())], 202);
+    }
+
+    private function cloneBuildIsQueued(string $siteId): bool
+    {
+        return app(DevCloneService::class)->cloneBuildIsQueued($siteId);
     }
 }

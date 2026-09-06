@@ -38,6 +38,7 @@ final class WWC_Agent_Background
             'delete_backup',
             'site_scan',
             'content_apply',
+            'apply_clone_promote',
         ], true);
     }
 
@@ -229,7 +230,7 @@ final class WWC_Agent_Background
                 return;
             }
             $message = 'PHP-Abbruch: '.mb_substr((string) ($err['message'] ?? 'fatal'), 0, 220);
-            $resumable = in_array($command, ['backup_full', 'backup_incremental'], true) && WWC_Agent_Backup::has_work($jobId);
+            $resumable = in_array($command, ['backup_full', 'backup_incremental', 'restore_backup'], true) && WWC_Agent_Backup::has_work($jobId);
             $resumable = $resumable || ($command === 'staging_create' && WWC_Agent_Staging::has_work());
             if ($resumable) {
                 self::enqueue($jobId, $command, $payload);
@@ -269,6 +270,7 @@ final class WWC_Agent_Background
                 'purge_wwc' => WWC_Agent_Backup::purge_managed(),
                 'site_scan' => WWC_Agent_Site_Intel::scan(),
                 'content_apply' => WWC_Agent_Site_Intel::apply(is_array($payload['ops'] ?? null) ? $payload['ops'] : []),
+                'apply_clone_promote' => WWC_Agent_Clone_Promote::apply($payload),
                 default => ['ok' => false, 'error' => 'Unknown command'],
             };
 

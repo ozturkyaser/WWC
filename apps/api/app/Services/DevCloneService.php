@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Jobs\BuildDevCloneJob;
+use App\Jobs\PromoteDevCloneJob;
 use App\Models\Site;
 use App\Models\SiteBackup;
 use Illuminate\Support\Facades\Crypt;
@@ -54,6 +56,8 @@ class DevCloneService
             'admin_pass' => isset($clone['admin_pass_encrypted'])
                 ? Crypt::decryptString($clone['admin_pass_encrypted'])
                 : null,
+            'media_from_live' => (bool) ($clone['media_from_live'] ?? false),
+            'promote_backup_id' => $clone['promote_backup_id'] ?? null,
             'error' => $clone['error'] ?? null,
             'message' => $clone['message'] ?? null,
             'built_at' => $clone['built_at'] ?? null,
@@ -139,7 +143,7 @@ class DevCloneService
             $tablePrefix = $this->detectTablePrefix($dir.'/html/wp-config.php');
             $this->writeCloneWpConfig($dir, $tablePrefix, $cloneUrl);
             $this->neutralizeCloneHtaccess($dir);
-            $this->writeGuardMuPlugin($dir);
+            $this->writeGuardMuPlugin($dir, rtrim((string) ($manifest['site_url'] ?? $site->url), '/'));
             $this->installIntelOnClone($site);
             $this->writeComposeFile($dir, $site, $port, $phpImage);
 
@@ -177,7 +181,16 @@ class DevCloneService
             $oldUrl = rtrim((string) ($manifest['site_url'] ?? $site->url), '/');
             if ($oldUrl !== '' && $oldUrl !== $cloneUrl) {
                 $this->wp($dir, $project, ['search-replace', $oldUrl, $cloneUrl, '--all-tables', '--report-changed-only'], true);
+                // Medien bleiben auf Live: Upload-URLs nicht auf den Clone umschreiben.
+                $this->wp($dir, $project, [
+                    'search-replace',
+                    rtrim($cloneUrl, '/').'/wp-content/uploads',
+                    rtrim($oldUrl, '/').'/wp-content/uploads',
+                    '--all-tables',
+                    '--report-changed-only',
+                ], true);
             }
+            $this->writeMediaRewrite($dir, $oldUrl !== '' ? $oldUrl : rtrim((string) $site->url, '/'));
             $this->wp($dir, $project, ['option', 'update', 'blog_public', '0'], true);
 
             // Der WWC-Agent darf im Clone nicht laufen: er wuerde sich mit den
@@ -210,6 +223,7 @@ class DevCloneService
                 'error' => null,
                 'message' => null,
                 'built_at' => now()->toIso8601String(),
+                'media_from_live' => true,
             ]);
 
             // Erfolgreicher Clone-Bau = bestandener Restore-Test fuer die ganze Kette
@@ -360,6 +374,209 @@ class DevCloneService
         $site->update(['dev_clone' => null]);
     }
 
+    /**
+     * Nach einem fertigen Backup die isolierte Proxmox-Kopie (neu) bauen.
+     */
+    public function queueAfterBackup(Site $site): void
+    {
+        if (! $this->canBuild($site)) {
+            return;
+        }
+        $status = $site->dev_clone['status'] ?? null;
+        if ($status === 'building' && $this->cloneBuildIsQueued($site->id)) {
+            return;
+        }
+        if ($status === 'promoting') {
+            return;
+        }
+
+        $this->setState($site, [
+            'status' => 'building',
+            'error' => null,
+            'message' => 'Nach Backup: isolierte Umgebung auf Proxmox aktualisieren…',
+            'building_started_at' => now()->toIso8601String(),
+        ]);
+        BuildDevCloneJob::dispatch($site->id);
+    }
+
+    public function startPromote(Site $site): void
+    {
+        if (! $this->isReady($site)) {
+            throw new RuntimeException('Isolierte Umgebung ist nicht bereit.');
+        }
+        if (! $site->getHmacSecret()) {
+            throw new RuntimeException('Site ist nicht verbunden – Live-Zug nicht möglich.');
+        }
+
+        $this->setState($site, [
+            'status' => 'promoting',
+            'error' => null,
+            'message' => 'Sicherheits-Backup der Live-Site, danach Code und Datenbank ohne Medien…',
+            'promote_started_at' => now()->toIso8601String(),
+        ]);
+
+        $job = app(AgentDispatcher::class)->dispatch($site, 'backup_incremental', [
+            'label' => 'pre-promote-clone',
+            'reason' => 'pre-promote-clone',
+        ]);
+        $this->setState($site, ['promote_backup_job_id' => $job->id]);
+    }
+
+    public function continuePromoteAfterSafetyBackup(Site $site, bool $backupOk, ?string $error = null): void
+    {
+        if (($site->dev_clone['status'] ?? '') !== 'promoting') {
+            return;
+        }
+        if (! $backupOk) {
+            $this->setState($site, [
+                'status' => 'ready',
+                'error' => 'Live-Zug abgebrochen: Sicherheits-Backup fehlgeschlagen. '.mb_substr((string) $error, 0, 240),
+                'message' => null,
+            ]);
+
+            return;
+        }
+
+        $this->setState($site, ['message' => 'Paket aus der isolierten Umgebung schnüren (ohne Bilder/Videos)…']);
+        PromoteDevCloneJob::dispatch($site->id);
+    }
+
+    public function dispatchPromoteApply(Site $site): void
+    {
+        $path = $this->packagePromote($site);
+        $sha = (string) hash_file('sha256', $path);
+        $this->setState($site, [
+            'message' => 'Änderungen auf die Live-Site übertragen…',
+            'promote_sha256' => $sha,
+            'promote_size' => filesize($path),
+        ]);
+        app(AgentDispatcher::class)->dispatch($site, 'apply_clone_promote', [
+            'sha256' => $sha,
+            'size_bytes' => filesize($path),
+        ]);
+    }
+
+    public function promotePackagePath(Site $site): string
+    {
+        $dir = storage_path('app/wwc-promotes/'.$site->id);
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        return $dir.'/promote.zip';
+    }
+
+    public function finishPromote(Site $site, bool $ok, ?string $error = null): void
+    {
+        $this->setState($site, [
+            'status' => 'ready',
+            'error' => $ok ? null : mb_substr((string) $error, 0, 400),
+            'message' => $ok ? 'Live-Zug fertig. Medien lagen weiter auf der Live-Site.' : null,
+            'promoted_at' => $ok ? now()->toIso8601String() : ($site->dev_clone['promoted_at'] ?? null),
+        ]);
+        $pkg = $this->promotePackagePath($site);
+        if (is_file($pkg)) {
+            @unlink($pkg);
+        }
+    }
+
+    public function cloneBuildIsQueued(string $siteId): bool
+    {
+        if (config('queue.default') === 'sync') {
+            return false;
+        }
+
+        return \Illuminate\Support\Facades\DB::table('jobs')
+            ->where('payload', 'like', '%BuildDevCloneJob%')
+            ->where('payload', 'like', '%'.$siteId.'%')
+            ->exists();
+    }
+
+    /**
+     * Slim-Paket: Plugins, Themes, MU-Plugins, Datenbank. Keine Uploads.
+     */
+    private function packagePromote(Site $site): string
+    {
+        if (! $this->isReady($site) && ($site->dev_clone['status'] ?? '') !== 'promoting') {
+            throw new RuntimeException('Isolierte Umgebung ist nicht bereit.');
+        }
+        $dir = $this->cloneDir($site);
+        $html = $dir.'/html';
+        if (! is_dir($html.'/wp-content')) {
+            throw new RuntimeException('Clone-Dateien fehlen.');
+        }
+
+        $cloneUrl = rtrim((string) ($site->dev_clone['url'] ?? ''), '/');
+        $lanUrl = rtrim((string) ($site->dev_clone['lan_url'] ?? ''), '/');
+        $liveUrl = rtrim((string) $site->url, '/');
+        $sqlHost = $dir.'/promote-db.sql';
+        $this->wp($dir, $this->projectName($site), ['db', 'export', '/var/www/html/wwc-promote.sql', '--add-drop-table'], true);
+        $sqlInHtml = $html.'/wwc-promote.sql';
+        if (! is_file($sqlInHtml)) {
+            throw new RuntimeException('Datenbank-Export aus der isolierten Umgebung fehlgeschlagen.');
+        }
+        $sql = (string) file_get_contents($sqlInHtml);
+        foreach (array_filter([$cloneUrl, $lanUrl]) as $from) {
+            if ($from !== '' && $liveUrl !== '' && $from !== $liveUrl) {
+                $sql = str_replace($from, $liveUrl, $sql);
+                $sql = str_replace(str_replace('/', '\\/', $from), str_replace('/', '\\/', $liveUrl), $sql);
+            }
+        }
+        file_put_contents($sqlHost, $sql);
+        @unlink($sqlInHtml);
+
+        $target = $this->promotePackagePath($site);
+        $zip = new ZipArchive;
+        if ($zip->open($target, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('Promote-Archiv konnte nicht erzeugt werden.');
+        }
+        $zip->addFromString('manifest.json', (string) json_encode([
+            'type' => 'clone-promote',
+            'site_id' => $site->id,
+            'created_at' => now()->toIso8601String(),
+            'live_url' => $liveUrl,
+            'includes' => ['plugins', 'themes', 'mu-plugins', 'database'],
+            'excludes' => ['wp-content/uploads'],
+        ]));
+        $zip->addFile($sqlHost, 'database.sql');
+        $this->zipTree($zip, $html.'/wp-content/plugins', 'plugins', ['wwc-agent']);
+        $this->zipTree($zip, $html.'/wp-content/themes', 'themes');
+        $this->zipTree($zip, $html.'/wp-content/mu-plugins', 'mu-plugins', [
+            'wwc-clone-guard.php',
+            'wwc-site-intel.php',
+            'wwc-site-intel-lib.php',
+        ]);
+        $zip->close();
+        @unlink($sqlHost);
+
+        return $target;
+    }
+
+    /**
+     * @param  list<string>  $skipNames
+     */
+    private function zipTree(ZipArchive $zip, string $from, string $prefix, array $skipNames = []): void
+    {
+        if (! is_dir($from)) {
+            return;
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($from, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $file) {
+            if (! $file->isFile()) {
+                continue;
+            }
+            $abs = $file->getPathname();
+            $rel = ltrim(str_replace('\\', '/', substr($abs, strlen($from))), '/');
+            $top = explode('/', $rel)[0] ?? '';
+            if (in_array($top, $skipNames, true) || in_array(basename($rel), $skipNames, true)) {
+                continue;
+            }
+            $zip->addFile($abs, $prefix.'/'.$rel);
+        }
+    }
+
     // ---------------------------------------------------------------
     // Backup-Kette und Extraktion
     // ---------------------------------------------------------------
@@ -437,12 +654,7 @@ class DevCloneService
             throw new RuntimeException('Voll-Backup enthält kein files.zip.');
         }
         foreach ($parts as $part) {
-            $inner = new ZipArchive;
-            if ($inner->open($part) !== true) {
-                throw new RuntimeException(basename($part).' nicht lesbar: '.$backup->backup_id);
-            }
-            $inner->extractTo($html);
-            $inner->close();
+            $this->extractFilesZipSkippingMedia((string) $part, $html, $backup->backup_id);
         }
 
         $manifest = [];
@@ -709,16 +921,69 @@ PHP;
         file_put_contents($path, $src);
     }
 
-    private function writeGuardMuPlugin(string $dir): void
+    /**
+     * Bilder, Videos und andere Uploads bleiben auf der Live-Site.
+     * Im Clone werden sie nur verlinkt, nicht kopiert.
+     */
+    public function isCloneMediaPath(string $rel): bool
+    {
+        $rel = strtolower(ltrim(str_replace('\\', '/', $rel), '/'));
+        if (! str_starts_with($rel, 'wp-content/uploads/')) {
+            return false;
+        }
+        $base = basename($rel);
+
+        return ! in_array($base, ['index.php', 'index.html', '.htaccess'], true);
+    }
+
+    private function extractFilesZipSkippingMedia(string $zipPath, string $html, string $backupId): void
+    {
+        $inner = new ZipArchive;
+        if ($inner->open($zipPath) !== true) {
+            throw new RuntimeException(basename($zipPath).' nicht lesbar: '.$backupId);
+        }
+        for ($i = 0; $i < $inner->numFiles; $i++) {
+            $name = str_replace('\\', '/', (string) $inner->getNameIndex($i));
+            if ($this->isCloneMediaPath($name)) {
+                continue;
+            }
+            $inner->extractTo($html, [$name]);
+        }
+        $inner->close();
+    }
+
+    private function writeMediaRewrite(string $dir, string $liveUrl): void
+    {
+        $liveUrl = rtrim($liveUrl, '/');
+        if ($liveUrl === '') {
+            return;
+        }
+        $ht = $dir.'/html/.htaccess';
+        $rule = "\n# WWC: fehlende Uploads von der Live-Site laden\n"
+            ."RewriteEngine On\n"
+            ."RewriteCond %{REQUEST_FILENAME} !-f\n"
+            .'RewriteRule ^wp-content/uploads/(.*)$ '.$liveUrl."/wp-content/uploads/$1 [R=302,L]\n";
+        $existing = is_file($ht) ? (string) file_get_contents($ht) : '';
+        if (! str_contains($existing, 'WWC: fehlende Uploads')) {
+            file_put_contents($ht, $rule.$existing);
+        }
+    }
+
+    private function writeGuardMuPlugin(string $dir, string $liveUrl = ''): void
     {
         $muDir = $dir.'/html/wp-content/mu-plugins';
         @mkdir($muDir, 0755, true);
+        $liveUrl = rtrim($liveUrl, '/');
+        $livePhp = $liveUrl !== '' ? var_export($liveUrl, true) : 'null';
         $guard = <<<'PHP'
 <?php
 /**
  * Plugin Name: WWC Clone Guard
- * Description: Verhindert, dass die Dev-Kopie Mails verschickt oder indexiert wird.
+ * Description: Verhindert, dass die Dev-Kopie Mails verschickt oder indexiert wird. Medien kommen von Live.
  */
+if (! defined('WWC_CLONE_LIVE_URL')) {
+    define('WWC_CLONE_LIVE_URL', __WWC_LIVE__);
+}
 add_filter('pre_wp_mail', '__return_false', 100);
 add_filter('wp_robots', function (array $robots): array {
     $robots['noindex'] = true;
@@ -726,8 +991,20 @@ add_filter('wp_robots', function (array $robots): array {
     return $robots;
 }, 100);
 add_action('admin_notices', function (): void {
-    echo '<div class="notice notice-warning"><p><strong>WWC Dev-Kopie</strong> – Änderungen hier wirken sich nicht auf die Live-Site aus. Mails sind deaktiviert.</p></div>';
+    echo '<div class="notice notice-warning"><p><strong>WWC Dev-Kopie</strong> – isoliert auf Proxmox. Bilder und Videos kommen von der Live-Site und werden nicht mitkopiert. Mails sind aus.</p></div>';
 });
+add_filter('wp_get_attachment_url', static function (string $url): string {
+    $live = WWC_CLONE_LIVE_URL;
+    if (! is_string($live) || $live === '') {
+        return $url;
+    }
+    $path = (string) (parse_url($url, PHP_URL_PATH) ?: '');
+    if (! str_contains($path, '/wp-content/uploads/')) {
+        return $url;
+    }
+
+    return $live.'/wp-content/uploads/'.ltrim((string) preg_replace('#^.*?/wp-content/uploads/#', '', $path), '/');
+}, 99);
 add_filter('style_loader_src', static function (string $src): string {
     return add_query_arg('wwc', '2', $src);
 }, 99);
@@ -752,6 +1029,7 @@ add_action('template_redirect', static function (): void {
     });
 });
 PHP;
+        $guard = str_replace('__WWC_LIVE__', $livePhp, $guard);
         file_put_contents($muDir.'/wwc-clone-guard.php', $guard);
     }
 

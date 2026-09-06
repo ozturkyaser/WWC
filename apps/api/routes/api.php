@@ -53,6 +53,7 @@ Route::prefix('agent')->middleware(VerifyAgentHmac::class)->group(function () {
     Route::post('backups/complete', [\App\Http\Controllers\Api\AgentBackupController::class, 'complete']);
     Route::get('backups/download', [\App\Http\Controllers\Api\AgentBackupController::class, 'download']);
     Route::post('backups/delete', [\App\Http\Controllers\Api\AgentBackupController::class, 'delete']);
+    Route::get('promotes/download', [\App\Http\Controllers\Api\AgentClonePromoteController::class, 'download']);
 });
 
 Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(function () {
@@ -103,6 +104,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'create']);
     Route::post('/sites/{id}/dev-clone/dry-run', [\App\Http\Controllers\Api\DevCloneController::class, 'dryRun']);
     Route::delete('/sites/{id}/dev-clone', [\App\Http\Controllers\Api\DevCloneController::class, 'destroy']);
+    Route::post('/sites/{id}/dev-clone/promote', [\App\Http\Controllers\Api\DevCloneController::class, 'promote']);
     Route::get('/sites/{id}/content-studio', [\App\Http\Controllers\Api\ContentStudioController::class, 'show']);
     Route::post('/sites/{id}/content-studio/target', [\App\Http\Controllers\Api\ContentStudioController::class, 'target']);
     Route::post('/sites/{id}/content-studio/scan', [\App\Http\Controllers\Api\ContentStudioController::class, 'scan']);

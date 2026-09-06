@@ -49,9 +49,12 @@ type DevClone = {
   php_image?: string | null;
   admin_user?: string | null;
   admin_pass?: string | null;
+  media_from_live?: boolean;
+  promote_backup_id?: string | null;
   error?: string | null;
   message?: string | null;
   built_at?: string | null;
+  promoted_at?: string | null;
   last_dry_run?: {
     at?: string;
     running?: boolean;
@@ -355,7 +358,7 @@ export default function SiteDetailPage() {
       /update|dry-run|multi/i.test(String(j.command || j.progress_ui?.title || ""))
     );
     const interval =
-      tab === "updates" || tab === "staging" || hasUpdateJobs || detail?.dev_clone?.status === "building"
+      tab === "updates" || tab === "staging" || hasUpdateJobs || detail?.dev_clone?.status === "building" || detail?.dev_clone?.status === "promoting"
         ? 2500
         : 6000;
     const t = setInterval(() => load().catch(() => undefined), interval);
@@ -650,6 +653,24 @@ export default function SiteDetailPage() {
       setMsgTone("info");
       setMsg("Dry-Run läuft in der isolierten Umgebung. Danach prüft die KI die Logs und gibt Bescheid, wenn keine Fehler da sind.");
       setSelectedUpdates(new Set());
+      await load();
+    } catch (e) {
+      setMsgTone("error");
+      setMsg(e instanceof Error ? e.message : "Fehler");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function devClonePromote() {
+    if (!confirm("Live-Zug: zuerst Sicherheits-Backup der Live-Site, dann Code und Datenbank aus der isolierten Umgebung. Bilder und Videos bleiben auf Live und werden nicht überschrieben. Fortfahren?")) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/sites/${params.id}/dev-clone/promote`, { method: "POST" });
+      setMsgTone("info");
+      setMsg("Live-Zug gestartet: Sicherheits-Backup der Live-Site, danach Code und Datenbank ohne Medien.");
       await load();
     } catch (e) {
       setMsgTone("error");
@@ -1443,9 +1464,9 @@ export default function SiteDetailPage() {
               </label>
             </div>
             <p className="muted" style={{ margin: "8px 0 0", fontSize: "0.8rem" }}>
-              Backups laufen nachts leicht versetzt, werden auf den WWC-Server übertragen und
-              belasten den Kundenserver nicht doppelt. Gespeicherte Ausschlüsse aus der
-              Backup-Analyse gelten auch hier.
+              Backups laufen nachts leicht versetzt und landen auf dem WWC-Server.
+              Danach wird die isolierte Proxmox-Kopie aktualisiert (ohne Bilder/Videos).
+              Gespeicherte Ausschlüsse aus der Backup-Analyse gelten auch hier.
             </p>
           </div>
 
@@ -1825,16 +1846,17 @@ export default function SiteDetailPage() {
         <>
         <div className="surface surface-pad">
           <h3 style={{ marginTop: 0, fontSize: "1.05rem" }}>
-            Isolierte Umgebung auf dem WWC-Server
+            Isolierte Umgebung auf Proxmox
             {devClone?.status === "ready" && <span className="badge completed" style={{ marginLeft: 8 }}>bereit</span>}
             {devClone?.status === "building" && <span className="badge running" style={{ marginLeft: 8 }}>wird gebaut…</span>}
+            {devClone?.status === "promoting" && <span className="badge running" style={{ marginLeft: 8 }}>Live-Zug…</span>}
             {devClone?.status === "failed" && <span className="badge failed" style={{ marginLeft: 8 }}>fehlgeschlagen</span>}
           </h3>
-          <p className="muted" style={{ marginTop: 0 }}>
-            Kopie der Live-Site auf dem Proxmox-WWC-Server (eigener Docker-Stack, passende PHP-Version).
-            Änderungen und Tests bleiben isoliert – der Kundenhost (z. B. Strato) wird nicht belastet.
-            Fehlt das Backup noch auf dem Server, holt WWC das lokale Voll-Backup vom Agenten.
-          </p>
+          <ol className="muted" style={{ marginTop: 0, paddingLeft: 18, fontSize: "0.9rem" }}>
+            <li>Backup der Live-Site → auf diesem Proxmox entsteht eine isolierte Kopie (gleiche PHP-Version).</li>
+            <li>Dort programmieren und testen. Bilder und Videos bleiben auf Live und werden nur verlinkt.</li>
+            <li>Live-Zug: zuerst Sicherheits-Backup der Live-Site, dann Code und Datenbank zurück. Bei Problemen das Backup zurückspielen.</li>
+          </ol>
           {devClone?.status === "building" && devClone.message && (
             <p className="muted" style={{ marginTop: 0 }}>{devClone.message}</p>
           )}
@@ -1857,6 +1879,12 @@ export default function SiteDetailPage() {
               )}
               {devClone.backup_id && <span className="meta-chip">Quelle: {devClone.backup_id}</span>}
               {devClone.php_image && <span className="meta-chip">PHP {devClone.php_image}</span>}
+              {devClone.media_from_live && <span className="meta-chip">Medien: Live-Verweis</span>}
+              {devClone.promoted_at && (
+                <span className="meta-chip">
+                  Letzter Live-Zug {new Date(devClone.promoted_at).toLocaleString("de-DE")}
+                </span>
+              )}
             </div>
           )}
           {devClone?.status === "failed" && devClone.error && (
@@ -1919,7 +1947,20 @@ export default function SiteDetailPage() {
                 <a className="btn secondary" href={devClone.url} target="_blank" rel="noreferrer">
                   Frontend prüfen
                 </a>
+                <button
+                  className="btn"
+                  disabled={busy}
+                  type="button"
+                  onClick={devClonePromote}
+                >
+                  Auf Live übernehmen
+                </button>
               </>
+            )}
+            {devClone?.status === "promoting" && (
+              <p className="muted" style={{ width: "100%", margin: "0 0 8px" }}>
+                {devClone.message || "Live-Zug läuft: Sicherheits-Backup, dann Code und Datenbank ohne Medien."}
+              </p>
             )}
             <button
               className="btn"

@@ -241,13 +241,13 @@ final class WWC_Agent_Backup
         $forceFresh = ! empty($options['fresh']);
         unset($options['fresh']);
         if ($forceFresh) {
-            self::discard_unfinished_work();
+            self::discard_unfinished_work('full');
         }
         $jobId = WWC_Agent_Job_Progress::currentJobId() ?: ('local-'.wp_generate_password(8, false, false));
         $work = $forceFresh ? null : self::load_work($jobId);
         $adopted = false;
         if ($work === null && ! $forceFresh) {
-            $leftover = self::find_unfinished_work();
+            $leftover = self::find_unfinished_work('full');
             if ($leftover !== null) {
                 $work = $leftover['work'];
                 $work['job_id'] = $jobId;
@@ -274,52 +274,7 @@ final class WWC_Agent_Backup
             );
         }
 
-        $started = microtime(true);
-
-        while (! self::slice_exhausted($started, self::slice_budget((string) ($work['phase'] ?? '')))) {
-            $budget = self::slice_budget((string) ($work['phase'] ?? ''));
-            if (($work['phase'] ?? '') === 'db') {
-                $step = self::export_database_slice($work, $started, $budget);
-                self::save_work($jobId, $work);
-                if (! ($step['ok'] ?? false)) {
-                    return $step;
-                }
-                continue;
-            }
-            if (($work['phase'] ?? '') === 'scan') {
-                $step = self::scan_files_slice($work, $started, $budget);
-                self::save_work($jobId, $work);
-                if (! ($step['ok'] ?? false)) {
-                    return $step;
-                }
-                continue;
-            }
-            if (($work['phase'] ?? '') === 'zip') {
-                $step = self::zip_files_slice($work, $started, $budget);
-                self::save_work($jobId, $work);
-                if (! ($step['ok'] ?? false)) {
-                    return $step;
-                }
-                continue;
-            }
-            if (($work['phase'] ?? '') === 'finish' || ($work['phase'] ?? '') === 'offsite') {
-                $result = self::finish_full($work);
-                self::clear_work($jobId);
-
-                return $result;
-            }
-
-            return ['ok' => false, 'error' => 'Unbekannte Backup-Phase'];
-        }
-
-        self::save_work($jobId, $work);
-        WWC_Agent_Job_Progress::report(
-            (int) ($work['percent'] ?? 10),
-            'Hosting-Limit: Backup wird gleich fortgesetzt…',
-            true
-        );
-
-        return ['ok' => true, 'continue' => true, 'phase' => (string) ($work['phase'] ?? 'db')];
+        return self::run_sliced_work($jobId, $work);
     }
 
     public static function has_work(string $jobId): bool
@@ -328,9 +283,10 @@ final class WWC_Agent_Backup
     }
 
     /**
+     * @param  'full'|'incremental'  $kind
      * @return array{work: array<string, mixed>, old_job_id: string}|null
      */
-    public static function find_unfinished_work(): ?array
+    public static function find_unfinished_work(string $kind = 'full'): ?array
     {
         $candidates = [];
         $map = get_option('wwc_agent_backup_jobs', []);
@@ -338,7 +294,7 @@ final class WWC_Agent_Backup
             foreach ($map as $oldJobId => $meta) {
                 $dir = is_array($meta) ? rtrim((string) ($meta['dir'] ?? ''), '/') : '';
                 $work = $dir !== '' ? self::read_json_file($dir.'/work.json') : null;
-                if (! self::is_resumable_work($work)) {
+                if (! self::is_resumable_work($work, $kind)) {
                     continue;
                 }
                 $candidates[] = [
@@ -348,9 +304,10 @@ final class WWC_Agent_Backup
                 ];
             }
         }
-        foreach (glob(self::root().'/full-*/work.json') ?: [] as $file) {
+        $glob = $kind === 'incremental' ? '/incr-*/work.json' : '/full-*/work.json';
+        foreach (glob(self::root().$glob) ?: [] as $file) {
             $work = self::read_json_file($file);
-            if (! self::is_resumable_work($work)) {
+            if (! self::is_resumable_work($work, $kind)) {
                 continue;
             }
             $dir = dirname($file);
@@ -375,8 +332,9 @@ final class WWC_Agent_Backup
 
     /**
      * @param  array<string, mixed>|null  $work
+     * @param  'full'|'incremental'  $kind
      */
-    private static function is_resumable_work(?array $work): bool
+    private static function is_resumable_work(?array $work, string $kind = 'full'): bool
     {
         if ($work === null) {
             return false;
@@ -384,17 +342,21 @@ final class WWC_Agent_Backup
         $dir = rtrim((string) ($work['dir'] ?? ''), '/');
         $id = (string) ($work['id'] ?? '');
         $phase = (string) ($work['phase'] ?? '');
+        $prefix = $kind === 'incremental' ? 'incr-' : 'full-';
 
         return $dir !== ''
             && is_dir($dir)
-            && str_starts_with($id, 'full-')
+            && str_starts_with($id, $prefix)
             && in_array($phase, ['db', 'scan', 'zip', 'finish', 'offsite'], true);
     }
 
-    private static function discard_unfinished_work(): void
+    /**
+     * @param  'full'|'incremental'  $kind
+     */
+    private static function discard_unfinished_work(string $kind = 'full'): void
     {
         for ($i = 0; $i < 8; $i++) {
-            $leftover = self::find_unfinished_work();
+            $leftover = self::find_unfinished_work($kind);
             if ($leftover === null) {
                 return;
             }
@@ -411,88 +373,107 @@ final class WWC_Agent_Backup
 
     public static function create_incremental(string $label = 'auto', array $options = []): array
     {
-        $list = self::list();
-        $parent = null;
-        foreach ($list['backups'] as $b) {
-            if (($b['type'] ?? '') === 'full') {
-                $parent = $b;
-                break;
-            }
-        }
+        self::prepare_runtime();
+        $parent = self::latest_full();
         if (! $parent) {
             return self::create_full($label.'-full-base', $options);
         }
 
-        @set_time_limit(600);
-        $oldFiles = self::backup_filemap((string) $parent['id']);
-        $current = self::build_file_map(self::settings($options));
-        $changed = [];
-        foreach ($current as $rel => $meta) {
-            if (! isset($oldFiles[$rel]) || ($oldFiles[$rel]['hash'] ?? '') !== ($meta['hash'] ?? '')) {
-                $changed[$rel] = $meta;
+        $forceFresh = ! empty($options['fresh']);
+        unset($options['fresh']);
+        if ($forceFresh) {
+            self::discard_unfinished_work('incremental');
+        }
+        $jobId = WWC_Agent_Job_Progress::currentJobId() ?: ('local-'.wp_generate_password(8, false, false));
+        $work = $forceFresh ? null : self::load_work($jobId);
+        $adopted = false;
+        if ($work === null && ! $forceFresh) {
+            $leftover = self::find_unfinished_work('incremental');
+            if ($leftover !== null) {
+                $work = $leftover['work'];
+                $work['job_id'] = $jobId;
+                $oldJobId = (string) ($leftover['old_job_id'] ?? '');
+                if ($oldJobId !== '' && $oldJobId !== $jobId) {
+                    self::clear_work($oldJobId);
+                }
+                self::save_work($jobId, $work);
+                $adopted = true;
+                WWC_Agent_Job_Progress::report(
+                    (int) ($work['percent'] ?? 8),
+                    'Unvollständiges Inkrementell-Backup fortsetzen ('.$work['phase'].')…',
+                    true
+                );
             }
         }
-
-        $id = 'incr-'.gmdate('Ymd-His').'-'.wp_generate_password(6, false, false);
-        $dir = self::root().'/'.$id;
-        wp_mkdir_p($dir);
-        $dbFile = $dir.'/database.sql';
-        $db = self::export_database($dbFile);
-        if (! $db['ok']) {
-            self::rrmdir($dir);
-
-            return $db;
+        if ($work === null) {
+            $work = self::start_incremental_work($jobId, $label, $options, $parent);
+        } elseif (! $adopted) {
+            WWC_Agent_Job_Progress::report(
+                (int) ($work['percent'] ?? 8),
+                'Inkrementell-Backup fortsetzen ('.$work['phase'].')…',
+                true
+            );
         }
 
-        $filesZip = $dir.'/files.zip';
-        if ($changed !== []) {
-            $zip = self::zip_paths($filesZip, array_keys($changed), ABSPATH);
-            if (! $zip['ok']) {
-                self::rrmdir($dir);
+        return self::run_sliced_work($jobId, $work);
+    }
 
-                return $zip;
+    /**
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,continue?:bool,phase?:string,backup?:array<string,mixed>,error?:string}
+     */
+    private static function run_sliced_work(string $jobId, array $work): array
+    {
+        $started = microtime(true);
+
+        while (! self::slice_exhausted($started, self::slice_budget((string) ($work['phase'] ?? '')))) {
+            $budget = self::slice_budget((string) ($work['phase'] ?? ''));
+            if (($work['phase'] ?? '') === 'db') {
+                $step = self::export_database_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
             }
-        } else {
-            // empty archive marker
-            file_put_contents($dir.'/files.empty', '1');
+            if (($work['phase'] ?? '') === 'scan') {
+                $step = self::scan_files_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
+            }
+            if (($work['phase'] ?? '') === 'zip') {
+                if (($work['type'] ?? '') === 'incremental' && empty($work['diff_ready'])) {
+                    self::apply_incremental_diff($work);
+                    self::save_work($jobId, $work);
+                }
+                $step = self::zip_files_slice($work, $started, $budget);
+                self::save_work($jobId, $work);
+                if (! ($step['ok'] ?? false)) {
+                    return $step;
+                }
+                continue;
+            }
+            if (($work['phase'] ?? '') === 'finish' || ($work['phase'] ?? '') === 'offsite') {
+                $result = self::finish_backup($work);
+                self::clear_work($jobId);
+
+                return $result;
+            }
+
+            return ['ok' => false, 'error' => 'Unbekannte Backup-Phase'];
         }
 
-        $manifest = [
-            'id' => $id,
-            'type' => 'incremental',
-            'label' => $label,
-            'created_at' => gmdate('c'),
-            'wp_version' => get_bloginfo('version'),
-            'site_url' => home_url('/'),
-            'parent_id' => $parent['id'],
-            'file_count' => count($changed),
-            'files' => $changed,
-            'database' => 'database.sql',
-            'archive' => file_exists($filesZip) ? 'files.zip' : null,
-            'archives' => file_exists($filesZip) ? ['files.zip'] : [],
-        ];
-        file_put_contents($dir.'/manifest.json', wp_json_encode($manifest));
-        $sizeBytes = self::dir_size($dir);
-        WWC_Agent_Event_Queue::push('backup_created', 'Incremental backup '.$id, 'info', ['id' => $id, 'type' => 'incremental']);
+        self::save_work($jobId, $work);
+        WWC_Agent_Job_Progress::report(
+            (int) ($work['percent'] ?? 10),
+            'Hosting-Limit: Backup wird gleich fortgesetzt…',
+            true
+        );
 
-        $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
-        if (! ($offsite['ok'] ?? false)) {
-            WWC_Agent_Job_Progress::log('Off-site-Upload fehlgeschlagen (Backup bleibt lokal): '.($offsite['error'] ?? '?'));
-        }
-
-        return [
-            'ok' => true,
-            'backup' => [
-                'id' => $id,
-                'type' => 'incremental',
-                'label' => $label,
-                'parent_id' => $parent['id'],
-                'created_at' => $manifest['created_at'],
-                'size_bytes' => $sizeBytes,
-                'file_count' => count($changed),
-                'offsite' => (bool) ($offsite['ok'] ?? false),
-            ],
-        ];
+        return ['ok' => true, 'continue' => true, 'phase' => (string) ($work['phase'] ?? 'db')];
     }
 
     public static function latest_full(): ?array
@@ -640,7 +621,7 @@ final class WWC_Agent_Backup
         if ($zip->open($export, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             return ['ok' => false, 'error' => 'Cannot create export zip'];
         }
-        $names = array_merge(['manifest.json', 'database.sql', 'changed.zip'], self::list_file_archives($dir));
+        $names = array_merge(['manifest.json', 'database.sql', 'filemap.json', 'changed.zip'], self::list_file_archives($dir));
         foreach (array_unique($names) as $name) {
             $file = $dir.'/'.$name;
             if (is_file($file)) {
@@ -750,10 +731,13 @@ final class WWC_Agent_Backup
             return ['ok' => false, 'error' => 'Invalid manifest'];
         }
 
-        // Safety snapshot before restore
+        // Safety snapshot before restore (sliced; host may pause and resume)
         $safety = self::create_incremental('pre-restore-safety');
         if (! ($safety['ok'] ?? false)) {
             return ['ok' => false, 'error' => 'Could not create safety backup before restore', 'details' => $safety];
+        }
+        if (! empty($safety['continue'])) {
+            return ['ok' => true, 'continue' => true, 'phase' => 'safety-backup'];
         }
 
         $chain = [$manifest];
@@ -1700,7 +1684,8 @@ final class WWC_Agent_Backup
 
     private static function zip_files_slice(array &$work, float $started, int $budget): array
     {
-        [$map, $paths] = self::cached_filemap($work['dir']);
+        [$map, $allPaths] = self::cached_filemap($work['dir']);
+        $paths = is_array($work['zip_paths'] ?? null) ? array_values($work['zip_paths']) : $allPaths;
         $from = (int) ($work['zip_index'] ?? 0);
         $total = max(1, count($paths));
         if ($from === 0 && $paths === []) {
@@ -1956,37 +1941,43 @@ final class WWC_Agent_Backup
      * @param  array<string, mixed>  $work
      * @return array{ok:bool,backup?:array<string,mixed>,error?:string}
      */
-    private static function finish_full(array $work): array
+    private static function finish_backup(array $work): array
     {
         $id = (string) $work['id'];
         $dir = (string) $work['dir'];
         $label = (string) ($work['label'] ?? 'manual');
+        $type = ($work['type'] ?? 'full') === 'incremental' ? 'incremental' : 'full';
         $settings = self::settings(is_array($work['options'] ?? null) ? $work['options'] : []);
         $fileMap = self::read_json_file($dir.'/filemap.json') ?? [];
         $skipped = is_array($work['skipped'] ?? null) ? $work['skipped'] : ['count' => 0, 'bytes' => 0];
-        $fileCount = count($fileMap);
+        $fileCount = $type === 'incremental'
+            ? count(is_array($work['zip_paths'] ?? null) ? $work['zip_paths'] : [])
+            : count($fileMap);
         if ($fileCount === 0) {
             $fileCount = (int) ($work['file_count'] ?? 0);
         }
 
         $archives = self::list_file_archives($dir);
-        if ($archives === []) {
+        if ($archives === [] && $type === 'full') {
             $archives = ['files.zip'];
+        }
+        if ($archives === [] && $type === 'incremental' && ! is_file($dir.'/files.empty')) {
+            file_put_contents($dir.'/files.empty', '1');
         }
         if (! is_file($dir.'/manifest.json')) {
             WWC_Agent_Job_Progress::report(90, 'Manifest schreiben…', true);
             $manifest = [
                 'id' => $id,
-                'type' => 'full',
+                'type' => $type,
                 'label' => $label,
                 'created_at' => gmdate('c'),
                 'wp_version' => get_bloginfo('version'),
                 'site_url' => home_url('/'),
-                'parent_id' => null,
+                'parent_id' => $type === 'incremental' ? (string) ($work['parent_id'] ?? '') : null,
                 'file_count' => $fileCount,
                 'filemap' => 'filemap.json',
                 'database' => 'database.sql',
-                'archive' => $archives[0],
+                'archive' => $archives[0] ?? null,
                 'archives' => $archives,
                 'skipped' => ['count' => (int) ($skipped['count'] ?? 0), 'bytes' => (int) ($skipped['bytes'] ?? 0)],
                 'settings' => ['max_file_bytes' => $settings['max_file_bytes'], 'excludes' => $settings['excludes']],
@@ -1996,7 +1987,7 @@ final class WWC_Agent_Backup
             WWC_Agent_Job_Progress::report(90, 'Manifest vorhanden, Abschluss…', true);
             $manifest = self::read_json_file($dir.'/manifest.json') ?? [
                 'id' => $id,
-                'type' => 'full',
+                'type' => $type,
                 'label' => $label,
                 'created_at' => gmdate('c'),
             ];
@@ -2010,7 +2001,8 @@ final class WWC_Agent_Backup
             }
         }
 
-        WWC_Agent_Event_Queue::push('backup_created', 'Full backup '.$id, 'info', ['id' => $id, 'type' => 'full']);
+        $title = $type === 'incremental' ? 'Incremental backup ' : 'Full backup ';
+        WWC_Agent_Event_Queue::push('backup_created', $title.$id, 'info', ['id' => $id, 'type' => $type]);
 
         $offsite = WWC_Agent_Backup_Uploader::upload($id, 91, 96);
         if (! ($offsite['ok'] ?? false)) {
@@ -2021,20 +2013,23 @@ final class WWC_Agent_Backup
             ]);
         }
         @unlink($dir.'/work.json');
-        WWC_Agent_Job_Progress::report(96, 'Full-Backup fertiggestellt ('.count($archives).' ZIP-Teile)', true);
+        $done = $type === 'incremental' ? 'Inkrementell-Backup fertiggestellt' : 'Full-Backup fertiggestellt';
+        WWC_Agent_Job_Progress::report(96, $done.' ('.count($archives).' ZIP-Teile)', true);
 
-        return [
-            'ok' => true,
-            'backup' => [
-                'id' => $id,
-                'type' => 'full',
-                'label' => $label,
-                'created_at' => $manifest['created_at'],
-                'size_bytes' => $sizeBytes,
-                'file_count' => $fileCount,
-                'offsite' => (bool) ($offsite['ok'] ?? false),
-            ],
+        $backup = [
+            'id' => $id,
+            'type' => $type,
+            'label' => $label,
+            'created_at' => $manifest['created_at'],
+            'size_bytes' => $sizeBytes,
+            'file_count' => $fileCount,
+            'offsite' => (bool) ($offsite['ok'] ?? false),
         ];
+        if ($type === 'incremental') {
+            $backup['parent_id'] = (string) ($work['parent_id'] ?? ($manifest['parent_id'] ?? ''));
+        }
+
+        return ['ok' => true, 'backup' => $backup];
     }
 
     /**
@@ -2052,6 +2047,7 @@ final class WWC_Agent_Backup
         $work = [
             'job_id' => $jobId,
             'id' => $id,
+            'type' => 'full',
             'dir' => $dir,
             'label' => $label,
             'options' => $options,
@@ -2070,6 +2066,76 @@ final class WWC_Agent_Backup
         self::save_work($jobId, $work);
 
         return $work;
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @param  array<string, mixed>  $parent
+     * @return array<string, mixed>
+     */
+    private static function start_incremental_work(string $jobId, string $label, array $options, array $parent): array
+    {
+        WWC_Agent_Job_Progress::report(4, 'Inkrementell-Backup starten…', true);
+        $id = 'incr-'.gmdate('Ymd-His').'-'.wp_generate_password(6, false, false);
+        $dir = self::root().'/'.$id;
+        wp_mkdir_p($dir);
+        WWC_Agent_Job_Progress::log('Basis: '.(string) ($parent['id'] ?? '?').' → '.$dir, 6);
+        $work = [
+            'job_id' => $jobId,
+            'id' => $id,
+            'type' => 'incremental',
+            'dir' => $dir,
+            'label' => $label,
+            'options' => $options,
+            'parent_id' => (string) ($parent['id'] ?? ''),
+            'phase' => 'db',
+            'percent' => 8,
+            'db_file' => $dir.'/database.sql',
+            'db_header' => false,
+            'tables' => [],
+            'table_i' => 0,
+            'table_started' => false,
+            'skipped' => ['count' => 0, 'bytes' => 0, 'samples' => []],
+            'zip_index' => 0,
+            'zip_part' => 1,
+            'zip_part_from' => 0,
+            'diff_ready' => false,
+        ];
+        self::save_work($jobId, $work);
+
+        return $work;
+    }
+
+    /**
+     * Compare current filemap to the parent full backup and zip only changes.
+     *
+     * @param  array<string, mixed>  $work
+     */
+    private static function apply_incremental_diff(array &$work): void
+    {
+        if (! empty($work['diff_ready'])) {
+            return;
+        }
+        $current = self::read_json_file((string) $work['dir'].'/filemap.json') ?? [];
+        $old = self::backup_filemap((string) ($work['parent_id'] ?? ''));
+        $changed = [];
+        foreach ($current as $rel => $meta) {
+            if (! isset($old[$rel]) || ($old[$rel]['hash'] ?? '') !== ($meta['hash'] ?? '')) {
+                $changed[] = $rel;
+            }
+        }
+        if ($old === []) {
+            WWC_Agent_Job_Progress::log(
+                'Kein Dateiindex vom Voll-Backup – alle Dateien gelten als geändert',
+                48,
+                true
+            );
+        }
+        $work['zip_paths'] = $changed;
+        $work['file_count'] = count($changed);
+        $work['diff_ready'] = true;
+        self::write_json_file((string) $work['dir'].'/changed.json', $changed);
+        WWC_Agent_Job_Progress::log(count($changed).' geänderte Dateien seit dem Voll-Backup', 48, true);
     }
 
     private static function prepare_runtime(): void
@@ -2203,6 +2269,11 @@ final class WWC_Agent_Backup
         }
 
         return round($bytes / (1024 * 1024), 1).' MB';
+    }
+
+    public static function import_database_file(string $sqlFile): array
+    {
+        return self::import_database($sqlFile);
     }
 
     private static function import_database(string $sqlFile): array
