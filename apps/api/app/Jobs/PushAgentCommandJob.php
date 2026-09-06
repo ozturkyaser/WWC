@@ -15,7 +15,7 @@ class PushAgentCommandJob implements ShouldQueue
 
     public int $tries = 3;
 
-    public function __construct(public string $jobId) {}
+    public function __construct(public string $jobId, public bool $nudge = false) {}
 
     public function handle(AgentClient $client): void
     {
@@ -25,6 +25,19 @@ class PushAgentCommandJob implements ShouldQueue
         }
 
         if (in_array($job->status, ['cancelled', 'completed', 'failed'], true)) {
+            return;
+        }
+
+        if ($this->nudge) {
+            try {
+                $client->pushCommand($job->site, $job);
+            } catch (\Throwable $e) {
+                Log::warning('Agent-Nudge fehlgeschlagen', [
+                    'job_id' => $job->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return;
         }
 

@@ -1261,14 +1261,18 @@ YAML;
         }
         $src = $this->intelLibPath();
         copy($src, $mu.'/wwc-site-intel-lib.php');
+        copy($this->mcpLibPath(), $mu.'/wwc-site-mcp-lib.php');
         file_put_contents($mu.'/wwc-site-intel.php', <<<'PHP'
 <?php
 /**
  * Plugin Name: WWC Site Intel
- * Description: Scan und Content-Apply für die isolierte Dev-Kopie.
+ * Description: Scan, Content-Apply und MCP für die isolierte Dev-Kopie.
  */
 if (! class_exists('WWC_Agent_Site_Intel')) {
     require_once __DIR__ . '/wwc-site-intel-lib.php';
+}
+if (! class_exists('WWC_Agent_Mcp')) {
+    require_once __DIR__ . '/wwc-site-mcp-lib.php';
 }
 PHP);
         // Der Runner darf NICHT in mu-plugins liegen: WordPress laedt jede
@@ -1280,14 +1284,52 @@ PHP);
 if (! class_exists('WWC_Agent_Site_Intel')) {
     require_once WP_CONTENT_DIR . '/mu-plugins/wwc-site-intel-lib.php';
 }
+if (! class_exists('WWC_Agent_Mcp')) {
+    require_once WP_CONTENT_DIR . '/mu-plugins/wwc-site-mcp-lib.php';
+}
 $mode = (isset($args[0]) && is_string($args[0])) ? $args[0] : 'scan';
 if ($mode === 'apply') {
     $ops = json_decode((string) file_get_contents(WP_CONTENT_DIR . '/wwc-content-ops.json'), true);
     echo json_encode(WWC_Agent_Site_Intel::apply(is_array($ops) ? $ops : []));
     return;
 }
+if ($mode === 'mcp') {
+    $req = json_decode((string) file_get_contents(WP_CONTENT_DIR . '/wwc-mcp-call.json'), true);
+    $tool = is_array($req) ? (string) ($req['tool'] ?? '') : '';
+    $arguments = is_array($req['arguments'] ?? null) ? $req['arguments'] : [];
+    echo json_encode(WWC_Agent_Mcp::call($tool, $arguments));
+    return;
+}
 echo json_encode(WWC_Agent_Site_Intel::scan());
 PHP);
+    }
+
+    /**
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    public function mcpOnClone(Site $site, string $tool, array $arguments = []): array
+    {
+        $this->installIntelOnClone($site);
+        $dir = $this->cloneDir($site);
+        $reqPath = $dir.'/html/wp-content/wwc-mcp-call.json';
+        file_put_contents($reqPath, json_encode([
+            'tool' => $tool,
+            'arguments' => $arguments,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        try {
+            $out = $this->wp($dir, $this->projectName($site), [
+                'eval-file', '/var/www/html/wp-content/wwc-intel-run.php', 'mcp',
+            ]);
+        } finally {
+            @unlink($reqPath);
+        }
+        $json = $this->decodeWpJson($out);
+        if (! is_array($json)) {
+            throw new RuntimeException('Clone-MCP fehlgeschlagen: '.mb_substr(trim($out), 0, 240));
+        }
+
+        return $json;
     }
 
     public function scanClone(Site $site): array
@@ -1366,16 +1408,26 @@ PHP);
 
     private function intelLibPath(): string
     {
+        return $this->agentLibPath('class-site-intel.php', 'Site-Intel-Bibliothek fehlt auf dem Server.');
+    }
+
+    private function mcpLibPath(): string
+    {
+        return $this->agentLibPath('class-mcp.php', 'MCP-Bibliothek fehlt auf dem Server.');
+    }
+
+    private function agentLibPath(string $file, string $error): string
+    {
         foreach ([
-            rtrim((string) config('wwc.repo_path'), '/').'/packages/wp-agent/includes/class-site-intel.php',
-            base_path('resources/wp-agent/includes/class-site-intel.php'),
+            rtrim((string) config('wwc.repo_path'), '/').'/packages/wp-agent/includes/'.$file,
+            base_path('resources/wp-agent/includes/'.$file),
         ] as $path) {
             if (is_file($path)) {
                 return $path;
             }
         }
 
-        throw new RuntimeException('Site-Intel-Bibliothek fehlt auf dem Server.');
+        throw new RuntimeException($error);
     }
 
     public function cloneDir(Site $site): string

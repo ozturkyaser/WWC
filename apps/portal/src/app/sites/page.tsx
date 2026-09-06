@@ -17,6 +17,8 @@ type Site = {
   open_findings_count?: number;
   monitor?: { http_ok?: boolean; ssl_days?: number | null; php?: { status?: string }; wp?: { status?: string } };
   freeze_until?: string | null;
+  support_granted_at?: string | null;
+  support_revoked_at?: string | null;
 };
 
 export default function SitesPage() {
@@ -124,7 +126,12 @@ export default function SitesPage() {
                     <Link href={`/sites/${s.id}`} className="cell-title" style={{ color: "var(--text)" }}>
                       {s.name}
                     </Link>
-                    <div className="cell-sub">{s.url}</div>
+                    <div className="cell-sub">
+                      {s.url}
+                      {s.support_granted_at && !s.support_revoked_at && (
+                        <span className="badge online" style={{ marginLeft: 8 }}>Support</span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <span className="meta-chip">

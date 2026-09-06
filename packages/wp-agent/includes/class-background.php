@@ -122,6 +122,23 @@ final class WWC_Agent_Background
             ];
         }
 
+        if ($jobId !== '') {
+            foreach ($queue as $item) {
+                if (
+                    is_array($item)
+                    && (string) ($item['job_id'] ?? '') === $jobId
+                    && (string) ($item['command'] ?? '') === $command
+                ) {
+                    if (! wp_next_scheduled('wwc_agent_process_queue')) {
+                        wp_schedule_single_event(time() + 1, 'wwc_agent_process_queue');
+                    }
+                    self::spawn_cron();
+
+                    return;
+                }
+            }
+        }
+
         $queue[] = [
             'job_id' => $jobId,
             'command' => $command,
@@ -139,11 +156,23 @@ final class WWC_Agent_Background
     public static function spawn_cron(): void
     {
         $cronUrl = site_url('wp-cron.php?doing_wp_cron='.sprintf('%.22F', microtime(true)));
+        $ssl = apply_filters('https_local_ssl_verify', false);
+        // 0.01s is too short on many shared hosts – the POST never leaves.
         wp_remote_post($cronUrl, [
-            'timeout' => 0.01,
+            'timeout' => 1,
             'blocking' => false,
-            'sslverify' => apply_filters('https_local_ssl_verify', false),
+            'sslverify' => $ssl,
         ]);
+    }
+
+    private static function queue_lock_file(): string
+    {
+        $dir = trailingslashit(WP_CONTENT_DIR).'wwc-backups';
+        if (! is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+
+        return $dir.'/.queue.lock';
     }
 
     public static function maybe_spawn(): void
@@ -157,30 +186,47 @@ final class WWC_Agent_Background
 
     public static function process_queue(): void
     {
-        $queue = get_option(self::QUEUE_OPTION, []);
-        if (! is_array($queue) || $queue === []) {
+        $lock = @fopen(self::queue_lock_file(), 'c');
+        if ($lock && ! @flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
+            if (! wp_next_scheduled('wwc_agent_process_queue')) {
+                wp_schedule_single_event(time() + 3, 'wwc_agent_process_queue');
+            }
+
             return;
         }
 
-        // Drop cancelled items at the head
-        while ($queue !== []) {
-            $item = array_shift($queue);
-            update_option(self::QUEUE_OPTION, $queue, false);
-            if (! is_array($item)) {
-                continue;
+        try {
+            $queue = get_option(self::QUEUE_OPTION, []);
+            if (! is_array($queue) || $queue === []) {
+                return;
             }
-            $jobId = (string) ($item['job_id'] ?? '');
-            if ($jobId !== '' && self::is_cancelled($jobId)) {
-                continue;
-            }
-            self::run_item($item);
-            break;
-        }
 
-        $queue = get_option(self::QUEUE_OPTION, []);
-        if (is_array($queue) && $queue !== []) {
-            wp_schedule_single_event(time() + 2, 'wwc_agent_process_queue');
-            self::spawn_cron();
+            // Drop cancelled items at the head
+            while ($queue !== []) {
+                $item = array_shift($queue);
+                update_option(self::QUEUE_OPTION, $queue, false);
+                if (! is_array($item)) {
+                    continue;
+                }
+                $jobId = (string) ($item['job_id'] ?? '');
+                if ($jobId !== '' && self::is_cancelled($jobId)) {
+                    continue;
+                }
+                self::run_item($item);
+                break;
+            }
+
+            $queue = get_option(self::QUEUE_OPTION, []);
+            if (is_array($queue) && $queue !== []) {
+                wp_schedule_single_event(time() + 2, 'wwc_agent_process_queue');
+                self::spawn_cron();
+            }
+        } finally {
+            if ($lock) {
+                @flock($lock, LOCK_UN);
+                fclose($lock);
+            }
         }
     }
 

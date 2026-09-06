@@ -102,6 +102,8 @@ class DevCloneBuildTest extends TestCase
             $this->assertFileExists($dir.'/html/wp-content/wwc-intel-run.php');
             $this->assertFileExists($dir.'/html/wp-content/mu-plugins/wwc-site-intel.php');
             $this->assertFileExists($dir.'/html/wp-content/mu-plugins/wwc-site-intel-lib.php');
+            $this->assertFileExists($dir.'/html/wp-content/mu-plugins/wwc-site-mcp-lib.php');
+            $this->assertStringContainsString('WWC_Agent_Mcp::call', (string) file_get_contents($dir.'/html/wp-content/wwc-intel-run.php'));
             $runner = (string) file_get_contents($dir.'/html/wp-content/wwc-intel-run.php');
             $this->assertStringContainsString('WWC_Agent_Site_Intel::scan()', $runner);
             $this->assertStringContainsString('WP_CONTENT_DIR', $runner);

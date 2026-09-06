@@ -137,10 +137,12 @@ class ReleaseService
             return null;
         }
         $branch = (string) config('wwc.deploy_branch', 'main');
-        if (is_executable($script)) {
+        $uid = function_exists('posix_geteuid') ? posix_geteuid() : 33;
+        if ($uid === 0) {
             return [$script, $branch];
         }
 
+        // Portal laeuft als www-data und darf /var/lock sowie systemctl nicht anfassen.
         return ['sudo', '-n', $script, $branch];
     }
 
@@ -152,7 +154,7 @@ class ReleaseService
     private function deployViaScript(array $command, array $log): array
     {
         $log[] = $this->step(implode(' ', $command));
-        $result = Process::timeout(180)->run($command);
+        $result = Process::timeout(900)->run($command);
         $out = trim($result->output()."\n".$result->errorOutput());
         $log[] = $out;
         if (! $result->successful()) {

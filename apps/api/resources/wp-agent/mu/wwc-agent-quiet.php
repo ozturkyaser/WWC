@@ -14,7 +14,7 @@ $wwcUri = (string) ($_SERVER['REQUEST_URI'] ?? '');
 $wwcQuiet = str_contains($wwcUri, '/wp-json/wwc/')
     || str_contains($wwcUri, 'rest_route=/wwc/')
     || str_contains($wwcUri, 'rest_route=%2Fwwc')
-    || in_array($wwcAction, ['wwc_agent_pair', 'wwc_agent_disconnect', 'wwc_agent_sync', 'wwc_agent_self_update'], true);
+    || in_array($wwcAction, ['wwc_agent_pair', 'wwc_agent_support', 'wwc_agent_support_revoke', 'wwc_agent_disconnect', 'wwc_agent_sync', 'wwc_agent_self_update'], true);
 
 if (! $wwcQuiet) {
     return;

@@ -288,7 +288,7 @@ function wwc_agent_spawn_cron_hint(): void
 {
     $cronUrl = site_url('wp-cron.php?doing_wp_cron='.sprintf('%.22F', microtime(true)));
     wp_remote_post($cronUrl, [
-        'timeout' => 0.01,
+        'timeout' => 1,
         'blocking' => false,
         'sslverify' => apply_filters('https_local_ssl_verify', false),
     ]);

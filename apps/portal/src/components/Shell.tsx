@@ -10,6 +10,7 @@ const groups = [
     items: [
       { href: "/dashboard", label: "Leitstand" },
       { href: "/sites", label: "Sites" },
+      { href: "/support", label: "Support" },
       { href: "/reviews", label: "Reviews" },
       { href: "/security", label: "Security" },
       { href: "/activity", label: "Aktivität" },

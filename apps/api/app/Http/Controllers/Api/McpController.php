@@ -5,18 +5,19 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Site;
 use App\Services\ContentStudioService;
+use App\Services\WpMcpService;
 use Illuminate\Http\Request;
 
 /**
- * HTTP-MCP fuer Cursor/Agenten: dieselben Werkzeuge wie der Portal-KI-Editor.
- * Live und isolierte Kopie teilen denselben Site-Datensatz, nicht denselben Pairing-Key.
+ * HTTP-MCP fuer Cursor/Agenten.
+ * Content-Studio-Tools plus direkte WordPress-Steuerung über den gepaarten Agenten.
  */
 class McpController extends Controller
 {
-    public function tools()
+    public function tools(WpMcpService $wpMcp)
     {
         return response()->json([
-            'tools' => [
+            'tools' => array_merge([
                 [
                     'name' => 'wwc_site_scan',
                     'description' => 'Scannt Theme, Plugins, Editoren, Seiten und Branding. target: clone (isolierte Kopie) oder live (gepaarter Agent).',
@@ -42,23 +43,38 @@ class McpController extends Controller
                     'description' => 'Übernimmt den in der Kopie geprüften Plan auf die Live-Site über den gepaarten Agenten.',
                     'input' => ['site_id' => 'uuid'],
                 ],
-            ],
+            ], $wpMcp->catalog()),
         ]);
     }
 
-    public function call(Request $request, ContentStudioService $studio)
+    public function call(Request $request, ContentStudioService $studio, WpMcpService $wpMcp)
     {
         $data = $request->validate([
-            'tool' => 'required|string|in:wwc_site_scan,wwc_content_plan,wwc_apply_dev,wwc_run_dev,wwc_promote_live',
-            'site_id' => 'required|uuid',
+            'tool' => 'required|string|in:wwc_site_scan,wwc_content_plan,wwc_apply_dev,wwc_run_dev,wwc_promote_live,wwc_sites,wwc_wp_tools,wwc_wp_call',
+            'site_id' => 'nullable|uuid',
             'arguments' => 'nullable|array',
         ]);
         $orgId = $request->attributes->get('organization_id');
-        $site = Site::where('organization_id', $orgId)->findOrFail($data['site_id']);
         $args = $data['arguments'] ?? [];
-        $target = isset($args['target']) ? (string) $args['target'] : null;
+        $siteId = $data['site_id'] ?? ($args['site_id'] ?? null);
 
         try {
+            if ($data['tool'] === 'wwc_sites') {
+                $sites = Site::query()->where('organization_id', $orgId)->orderBy('name')->get();
+
+                return response()->json([
+                    'ok' => true,
+                    'tool' => 'wwc_sites',
+                    'data' => $wpMcp->listSites($sites),
+                ]);
+            }
+
+            if (! is_string($siteId) || $siteId === '') {
+                return response()->json(['ok' => false, 'message' => 'site_id fehlt.'], 422);
+            }
+            $site = Site::where('organization_id', $orgId)->findOrFail($siteId);
+            $target = isset($args['target']) ? (string) $args['target'] : null;
+
             $result = match ($data['tool']) {
                 'wwc_site_scan' => $studio->scan($site, $target),
                 'wwc_content_plan' => $studio->plan($site, (string) ($args['prompt'] ?? $request->input('prompt', '')), $target),
@@ -70,6 +86,14 @@ class McpController extends Controller
                     (bool) ($args['confirm_live'] ?? false)
                 ),
                 'wwc_promote_live' => $studio->promoteLive($site),
+                'wwc_wp_tools' => $wpMcp->wpTools($site, $target),
+                'wwc_wp_call' => $wpMcp->wpCall(
+                    $site,
+                    (string) ($args['tool'] ?? ''),
+                    is_array($args['arguments'] ?? null) ? $args['arguments'] : [],
+                    $target,
+                    (bool) ($args['confirm_live'] ?? false)
+                ),
             };
         } catch (\RuntimeException $e) {
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 422);

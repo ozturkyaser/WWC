@@ -48,12 +48,39 @@ final class WWC_Agent_Rest
                 'callback' => [self::class, 'site_map'],
                 'permission_callback' => [self::class, 'authorize'],
             ]);
+            register_rest_route('wwc/v1', '/mcp/tools', [
+                'methods' => 'GET',
+                'callback' => [self::class, 'mcp_tools'],
+                'permission_callback' => [self::class, 'authorize'],
+            ]);
+            register_rest_route('wwc/v1', '/mcp', [
+                'methods' => 'POST',
+                'callback' => [self::class, 'mcp_call'],
+                'permission_callback' => [self::class, 'authorize'],
+            ]);
         });
     }
 
     public static function site_map(): WP_REST_Response
     {
         return new WP_REST_Response(WWC_Agent_Site_Intel::scan());
+    }
+
+    public static function mcp_tools(): WP_REST_Response
+    {
+        return new WP_REST_Response(['ok' => true, 'tools' => WWC_Agent_Mcp::tools()]);
+    }
+
+    public static function mcp_call(WP_REST_Request $request): WP_REST_Response
+    {
+        $tool = (string) $request->get_param('tool');
+        $arguments = $request->get_param('arguments');
+        if (! is_array($arguments)) {
+            $arguments = [];
+        }
+        $result = WWC_Agent_Mcp::call($tool, $arguments);
+
+        return new WP_REST_Response($result);
     }
 
     public static function discard_stray_output($served, $result, $request, $server)
@@ -284,7 +311,7 @@ final class WWC_Agent_Rest
             'staging_update_plugin', 'staging_update_theme', 'update_batch', 'staging_promote',
             'apply_clone_promote',
             'security_harden', 'security_status',
-            'site_scan', 'content_apply',
+            'site_scan', 'content_apply', 'mcp',
         ];
         if (! in_array($command, $allowed, true)) {
             return new WP_REST_Response(['ok' => false, 'error' => 'Command not allowed'], 400);
@@ -311,6 +338,7 @@ final class WWC_Agent_Rest
                 'security_status' => ['ok' => true, 'status' => WWC_Agent_Hardening::status()],
                 'site_scan' => WWC_Agent_Site_Intel::scan(),
                 'content_apply' => WWC_Agent_Site_Intel::apply(is_array($payload['ops'] ?? null) ? $payload['ops'] : []),
+                'mcp' => WWC_Agent_Mcp::handle($payload),
                 'purge_wwc' => WWC_Agent_Backup::purge_managed(),
                 'delete_backup' => WWC_Agent_Backup::delete((string) ($payload['backup_id'] ?? '')),
                 'list_backups' => WWC_Agent_Backup::list(),

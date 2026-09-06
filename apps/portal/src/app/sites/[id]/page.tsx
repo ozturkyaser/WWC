@@ -165,6 +165,11 @@ type SiteDetail = {
     } | null;
     freeze_until?: string | null;
     freeze_reason?: string | null;
+    access_mode?: string | null;
+    support_granted_at?: string | null;
+    support_revoked_at?: string | null;
+    support_contact?: string | null;
+    support_note?: string | null;
     activity_guard?: {
       enabled?: boolean;
       auto_block?: boolean;
@@ -764,6 +769,15 @@ export default function SiteDetailPage() {
         {updates > 0 && <span className="meta-chip"><span className="badge warn">{updates} Updates</span></span>}
       </div>
 
+      {site.support_granted_at && !site.support_revoked_at && (
+        <Flash tone="ok">
+          Support-Zugang aktiv
+          {site.support_granted_at ? ` seit ${new Date(site.support_granted_at).toLocaleString("de-DE")}` : ""}.
+          {site.support_contact ? ` Kontakt: ${site.support_contact}.` : ""}
+          {site.support_note ? ` ${site.support_note}` : ""}
+          {" "}Kein Pairing-Code nötig – der Kunde hat den Zugriff freigegeben.
+        </Flash>
+      )}
       <Flash tone={msgTone}>{msg}</Flash>
       {!detail.agent_synced && !install && (
         <Flash tone="error">
@@ -1861,6 +1875,13 @@ export default function SiteDetailPage() {
             <p className="muted" style={{ marginTop: 0 }}>{devClone.message}</p>
           )}
           {devClone?.status === "ready" && (
+            <p className="muted" style={{ marginTop: 0, fontSize: "0.9rem" }}>
+              Der WWC-Agent ist in dieser Kopie <strong>absichtlich deaktiviert</strong>.
+              Sonst würde sich /clone/… als Live-Site im Portal melden.
+              MCP und Steuerung laufen über dieses Dashboard (WP-CLI auf dem Server), nicht über das Plugin im Clone-WP-Admin.
+            </p>
+          )}
+          {devClone?.status === "ready" && (
             <div className="meta-row" style={{ marginBottom: 10 }}>
               {devClone.url && (
                 <span className="meta-chip">
@@ -1941,7 +1962,43 @@ export default function SiteDetailPage() {
           <div className="row">
             {devClone?.status === "ready" && devClone.url && (
               <>
-                <a className="btn" href={`${devClone.url}/wp-admin/`} target="_blank" rel="noreferrer">
+                <button
+                  className="btn"
+                  disabled={busy}
+                  type="button"
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await api(`/sites/${params.id}/content-studio/target`, {
+                        method: "POST",
+                        body: JSON.stringify({ target: "clone" }),
+                      });
+                      await api(`/sites/${params.id}/content-studio/scan`, {
+                        method: "POST",
+                        body: JSON.stringify({ target: "clone" }),
+                      });
+                      setMsgTone("ok");
+                      setMsg("Kopie wird gescannt – weiter im Tab KI-Editor.");
+                      setTab("editor");
+                      await load();
+                    } catch (e) {
+                      setMsgTone("error");
+                      setMsg(e instanceof Error ? e.message : "Scan fehlgeschlagen");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Kopie scannen / MCP
+                </button>
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={() => setTab("editor")}
+                >
+                  KI-Editor (Kopie)
+                </button>
+                <a className="btn secondary" href={`${devClone.url}/wp-admin/`} target="_blank" rel="noreferrer">
                   WP-Admin öffnen
                 </a>
                 <a className="btn secondary" href={devClone.url} target="_blank" rel="noreferrer">

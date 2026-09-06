@@ -1517,44 +1517,52 @@ final class WWC_Agent_Backup
     {
         $settings = self::settings(is_array($work['options'] ?? null) ? $work['options'] : []);
         $skipped = is_array($work['skipped'] ?? null) ? $work['skipped'] : ['count' => 0, 'bytes' => 0, 'samples' => []];
-        $map = self::read_json_file($work['dir'].'/filemap.json') ?? [];
-        $scanned = (int) ($work['scan_count'] ?? count($map));
-        $last = (string) ($work['scan_last'] ?? '');
-        $skipUntil = $last !== '';
+        if (empty($work['paths_ready']) || ! is_file(rtrim((string) $work['dir'], '/').'/paths.json')) {
+            return self::collect_paths_slice($work, $started, $budget);
+        }
 
-        WWC_Agent_Job_Progress::report((int) ($work['percent'] ?? 32), 'Dateien scannen…', $scanned === 0);
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator(ABSPATH, FilesystemIterator::SKIP_DOTS)
+        $map = self::read_json_file($work['dir'].'/filemap.json') ?? [];
+        $paths = self::read_json_file($work['dir'].'/paths.json') ?? [];
+        if (! is_array($paths)) {
+            $paths = [];
+        }
+        $index = (int) ($work['scan_index'] ?? 0);
+        $scanned = max((int) ($work['scan_count'] ?? 0), count($map));
+        $total = count($paths);
+
+        WWC_Agent_Job_Progress::report(
+            (int) ($work['percent'] ?? 36),
+            'Dateien scannen… '.$scanned.'/'.$total,
+            true
         );
-        foreach ($iterator as $file) {
+
+        for (; $index < $total; $index++) {
             if (self::slice_exhausted($started, $budget)) {
-                $work['scan_last'] = $last;
+                $work['scan_index'] = $index;
                 $work['scan_count'] = $scanned;
                 $work['skipped'] = $skipped;
                 self::write_json_file($work['dir'].'/filemap.json', $map);
-                $work['percent'] = min(47, 32 + (int) floor($scanned / 800));
+                $work['percent'] = $total > 0
+                    ? min(47, 36 + (int) floor(($index / $total) * 11))
+                    : 36;
+                WWC_Agent_Job_Progress::report(
+                    (int) $work['percent'],
+                    'Dateien scannen… '.$scanned.'/'.$total,
+                    true
+                );
 
                 return ['ok' => true];
             }
-            if (! $file->isFile()) {
+            $rel = (string) ($paths[$index] ?? '');
+            if ($rel === '' || isset($map[$rel]) || self::should_skip($rel)) {
                 continue;
             }
-            $absolute = $file->getRealPath();
-            if ($absolute === false) {
+            $absolute = rtrim(ABSPATH, '/\\').'/'.$rel;
+            if (! is_file($absolute)) {
                 continue;
             }
-            $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen(rtrim(ABSPATH, '/\\')))), '/');
-            if ($skipUntil) {
-                if ($rel === $last) {
-                    $skipUntil = false;
-                }
-                continue;
-            }
-            $last = $rel;
-            if (self::should_skip($rel)) {
-                continue;
-            }
-            $size = (int) $file->getSize();
+            $size = (int) filesize($absolute);
+            $mtime = (int) filemtime($absolute);
             $skipReason = null;
             $relLower = strtolower($rel);
             foreach ((array) $settings['excludes'] as $entry) {
@@ -1575,25 +1583,19 @@ final class WWC_Agent_Backup
                 continue;
             }
             $hash = $size > 20 * 1024 * 1024
-                ? 'size:'.$size.':mtime:'.$file->getMTime()
-                : (md5_file($absolute) ?: ('mtime:'.$file->getMTime()));
-            $map[$rel] = ['hash' => $hash, 'mtime' => (int) $file->getMTime(), 'size' => $size];
+                ? 'size:'.$size.':mtime:'.$mtime
+                : (md5_file($absolute) ?: ('mtime:'.$mtime));
+            $map[$rel] = ['hash' => $hash, 'mtime' => $mtime, 'size' => $size];
             $scanned++;
-            if ($scanned % 300 === 0) {
-                $work['percent'] = min(47, 32 + (int) floor($scanned / 800));
-                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Dateien scannen… '.$scanned);
+            if ($scanned % 200 === 0) {
+                $work['percent'] = $total > 0
+                    ? min(47, 36 + (int) floor((($index + 1) / $total) * 11))
+                    : 36;
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Dateien scannen… '.$scanned.'/'.$total);
             }
         }
 
-        if ($skipUntil) {
-            $work['scan_last'] = '';
-            $work['scan_count'] = $scanned;
-            $work['skipped'] = $skipped;
-            self::write_json_file($work['dir'].'/filemap.json', $map);
-
-            return ['ok' => true];
-        }
-        $work['scan_last'] = $last;
+        $work['scan_index'] = $total;
         $work['scan_count'] = $scanned;
         $work['skipped'] = $skipped;
         $work['file_count'] = count($map);
@@ -1604,6 +1606,68 @@ final class WWC_Agent_Backup
         $work['zip_part_from'] = 0;
         $work['percent'] = 48;
         WWC_Agent_Job_Progress::log($work['file_count'].' Dateien erfasst', 48, true);
+
+        return ['ok' => true];
+    }
+
+    /**
+     * Collect relative paths first (no hashing). Resume skips already listed
+     * paths so a restarted iterator cannot loop forever.
+     *
+     * @param  array<string, mixed>  $work
+     * @return array{ok:bool,error?:string}
+     */
+    private static function collect_paths_slice(array &$work, float $started, int $budget): array
+    {
+        $paths = self::read_json_file($work['dir'].'/paths.json') ?? [];
+        if (! is_array($paths)) {
+            $paths = [];
+        }
+        $seen = array_fill_keys($paths, true);
+        $listed = count($paths);
+
+        WWC_Agent_Job_Progress::report(
+            (int) ($work['percent'] ?? 32),
+            'Dateiliste… '.$listed,
+            true
+        );
+
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(ABSPATH, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $file) {
+            if (self::slice_exhausted($started, $budget)) {
+                self::write_json_file($work['dir'].'/paths.json', $paths);
+                $work['percent'] = min(35, 32 + (int) floor($listed / 8000));
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Dateiliste… '.$listed, true);
+
+                return ['ok' => true];
+            }
+            if (! $file->isFile()) {
+                continue;
+            }
+            $absolute = $file->getRealPath();
+            if ($absolute === false) {
+                continue;
+            }
+            $rel = ltrim(str_replace('\\', '/', substr($absolute, strlen(rtrim(ABSPATH, '/\\')))), '/');
+            if ($rel === '' || isset($seen[$rel]) || self::should_skip($rel)) {
+                continue;
+            }
+            $seen[$rel] = true;
+            $paths[] = $rel;
+            $listed++;
+            if ($listed % 1500 === 0) {
+                $work['percent'] = min(35, 32 + (int) floor($listed / 8000));
+                WWC_Agent_Job_Progress::report((int) $work['percent'], 'Dateiliste… '.$listed);
+            }
+        }
+
+        self::write_json_file($work['dir'].'/paths.json', $paths);
+        $work['paths_ready'] = true;
+        $work['scan_index'] = 0;
+        $work['percent'] = 36;
+        WWC_Agent_Job_Progress::log($listed.' Dateien in der Liste', 36, true);
 
         return ['ok' => true];
     }
@@ -1994,6 +2058,7 @@ final class WWC_Agent_Backup
         }
         // Keep filemap.json for incrementals – do not embed 47k hashes in manifest.json.
         unset($fileMap);
+        @unlink($dir.'/paths.json');
         $sizeBytes = 0;
         foreach (array_merge($archives, ['database.sql', 'filemap.json', 'manifest.json']) as $name) {
             if (is_file($dir.'/'.$name)) {
@@ -2120,6 +2185,9 @@ final class WWC_Agent_Backup
         $old = self::backup_filemap((string) ($work['parent_id'] ?? ''));
         $changed = [];
         foreach ($current as $rel => $meta) {
+            if (! is_array($meta) || ($meta['hash'] ?? '') === '') {
+                continue;
+            }
             if (! isset($old[$rel]) || ($old[$rel]['hash'] ?? '') !== ($meta['hash'] ?? '')) {
                 $changed[] = $rel;
             }

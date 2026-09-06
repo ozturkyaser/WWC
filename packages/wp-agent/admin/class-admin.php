@@ -8,6 +8,8 @@ final class WWC_Agent_Admin
     {
         add_action('admin_menu', [self::class, 'menu']);
         add_action('admin_post_wwc_agent_pair', [self::class, 'handle_pair']);
+        add_action('admin_post_wwc_agent_support', [self::class, 'handle_support']);
+        add_action('admin_post_wwc_agent_support_revoke', [self::class, 'handle_support_revoke']);
         add_action('admin_post_wwc_agent_disconnect', [self::class, 'handle_disconnect']);
         add_action('admin_post_wwc_agent_sync', [self::class, 'handle_sync']);
     }
@@ -55,6 +57,11 @@ final class WWC_Agent_Admin
             <?php endif; ?>
 
             <?php if ($paired): ?>
+                <?php if (! empty($cfg['support_mode'])): ?>
+                    <div class="notice notice-info">
+                        <p><strong>Support-Zugang ist aktiv.</strong> WWC darf warten, Backups und Inhalte nur für den Support nutzen. Du kannst das jederzeit beenden.</p>
+                    </div>
+                <?php endif; ?>
                 <div class="notice notice-success"><p>Verbunden mit Site-ID <code><?php echo esc_html($cfg['site_id']); ?></code></p></div>
                 <p>API: <code><?php echo esc_html($cfg['api_url']); ?></code></p>
                 <p>Agent-Version: <code><?php echo esc_html(WWC_AGENT_VERSION); ?></code>
@@ -81,6 +88,13 @@ final class WWC_Agent_Admin
                     <input type="hidden" name="action" value="wwc_agent_self_update">
                     <button class="button">Agent aktualisieren</button>
                 </form>
+                <?php if (! empty($cfg['support_mode'])): ?>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline-block;margin-right:8px;" onsubmit="return confirm('Support-Zugang wirklich beenden? WWC verliert den Zugriff.');">
+                    <?php wp_nonce_field('wwc_agent_support_revoke'); ?>
+                    <input type="hidden" name="action" value="wwc_agent_support_revoke">
+                    <button class="button button-secondary">Support beenden</button>
+                </form>
+                <?php endif; ?>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline-block;">
                     <?php wp_nonce_field('wwc_agent_disconnect'); ?>
                     <input type="hidden" name="action" value="wwc_agent_disconnect">
@@ -89,6 +103,34 @@ final class WWC_Agent_Admin
                 <p class="description" style="margin-top:12px;">Updates erscheinen auch unter <strong>Plugins → Installierte Plugins</strong>. Nach Portal-Release aktualisiert der Agent sich beim nächsten Heartbeat automatisch.</p>
             <?php else: ?>
                 <p>Standard-API-URL ist das WWC-Portal: <code><?php echo esc_html(self::default_api_url()); ?></code></p>
+
+                <h2>Support freigeben</h2>
+                <p>Ohne Pairing-Code. Danach erscheint diese Website im WWC-Wartungsportal, und der Support kann helfen.</p>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <?php wp_nonce_field('wwc_agent_support'); ?>
+                    <input type="hidden" name="action" value="wwc_agent_support">
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="support_api_url">API URL</label></th>
+                            <td>
+                                <input class="regular-text" type="url" name="api_url" id="support_api_url" value="<?php echo esc_attr(self::default_api_url()); ?>" required>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="support_contact">Kontakt (optional)</label></th>
+                            <td><input class="regular-text" type="text" name="contact" id="support_contact" placeholder="Name oder E-Mail"></td>
+                        </tr>
+                        <tr>
+                            <th><label for="support_note">Anliegen (optional)</label></th>
+                            <td><input class="regular-text" type="text" name="note" id="support_note" placeholder="z. B. Backup hängt, SEO prüfen" maxlength="500"></td>
+                        </tr>
+                    </table>
+                    <?php submit_button('Für WWC-Support freigeben', 'primary', 'submit', false); ?>
+                </form>
+
+                <hr>
+                <h2>Mit Pairing-Code verbinden</h2>
+                <p>Nur wenn ihr bereits eine Site im Portal angelegt und einen Code bekommen habt.</p>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field('wwc_agent_pair'); ?>
                     <input type="hidden" name="action" value="wwc_agent_pair">
@@ -137,6 +179,52 @@ final class WWC_Agent_Admin
         }
 
         self::redirect(['paired' => '1', 'notice' => 'Verbunden. Updates und Backups erscheinen nach dem nächsten Sync im Portal.']);
+    }
+
+    public static function handle_support(): void
+    {
+        self::silence_debug_output();
+        @ini_set('memory_limit', '512M');
+        if (! current_user_can('manage_options')) {
+            wp_die('Forbidden');
+        }
+        check_admin_referer('wwc_agent_support');
+
+        $api = trim((string) wp_unslash($_POST['api_url'] ?? ''));
+        $contact = sanitize_text_field((string) wp_unslash($_POST['contact'] ?? ''));
+        $note = sanitize_text_field((string) wp_unslash($_POST['note'] ?? ''));
+
+        try {
+            $result = WWC_Agent_Api_Client::grant_support($api, [
+                'contact' => $contact,
+                'note' => $note,
+            ]);
+        } catch (\Throwable $e) {
+            self::redirect(['error' => 'Freigabe abgebrochen: '.$e->getMessage()]);
+        }
+        if (is_wp_error($result)) {
+            self::redirect(['error' => $result->get_error_message()]);
+        }
+        if (! WWC_Agent_Config::is_paired()) {
+            self::redirect(['error' => 'Freigabe am Portal ok, Schlüssel konnte lokal nicht gespeichert werden.']);
+        }
+
+        self::redirect(['notice' => 'Support-Zugang ist aktiv. Die Website erscheint jetzt im WWC-Portal.']);
+    }
+
+    public static function handle_support_revoke(): void
+    {
+        self::silence_debug_output();
+        if (! current_user_can('manage_options')) {
+            wp_die('Forbidden');
+        }
+        check_admin_referer('wwc_agent_support_revoke');
+        $result = WWC_Agent_Api_Client::revoke_support();
+        if (is_wp_error($result)) {
+            WWC_Agent_Config::clear();
+            self::redirect(['error' => 'Lokal getrennt. Portal: '.$result->get_error_message()]);
+        }
+        self::redirect(['notice' => 'Support-Zugang beendet. WWC hat keinen Zugriff mehr.']);
     }
 
     public static function handle_sync(): void

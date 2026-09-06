@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\PushAgentCommandJob;
 use App\Models\Site;
 use App\Models\SiteEvent;
 use App\Models\VulnerabilityFinding;
@@ -14,6 +15,7 @@ use App\Services\PluginPackager;
 use App\Services\SiteOnboardingService;
 use App\Services\StagingPortalService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class AgentIngressController extends Controller
@@ -38,6 +40,35 @@ class AgentIngressController extends Controller
         }
 
         return response()->json($result);
+    }
+
+    public function supportGrant(Request $request, \App\Services\SupportGrantService $support)
+    {
+        $data = $request->validate([
+            'site_url' => 'required|string|max:500',
+            'wp_version' => 'nullable|string|max:32',
+            'php_version' => 'nullable|string|max:32',
+            'agent_version' => 'nullable|string|max:32',
+            'contact' => 'nullable|string|max:190',
+            'note' => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $result = $support->grant($data, $request->getSchemeAndHttpHost());
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        return response()->json($result, $result['created'] ? 201 : 200);
+    }
+
+    public function supportRevoke(Request $request, \App\Services\SupportGrantService $support)
+    {
+        /** @var Site $site */
+        $site = $request->attributes->get('agent_site');
+        $support->revoke($site);
+
+        return response()->json(['ok' => true]);
     }
 
     public function heartbeat(Request $request, StagingPortalService $stagingPortal)
@@ -164,6 +195,22 @@ class AgentIngressController extends Controller
             'started_at' => $job->started_at ?? now(),
         ]);
 
+        $site->update([
+            'last_seen_at' => now(),
+            'status' => 'online',
+        ]);
+
+        $label = (string) ($data['label'] ?? '');
+        if (
+            in_array($job->command, ['backup_full', 'backup_incremental'], true)
+            && str_contains($label, 'Hosting-Limit')
+        ) {
+            $nudgeKey = 'wwc-backup-nudge-'.$job->id;
+            if (Cache::add($nudgeKey, 1, 25)) {
+                PushAgentCommandJob::dispatch($job->id, true)->delay(now()->addSeconds(3));
+            }
+        }
+
         return response()->json(['ok' => true]);
     }
 
@@ -237,7 +284,17 @@ class AgentIngressController extends Controller
         if (! empty($data['inventory'])) {
             $site->inventory = $data['inventory'];
             $site->wp_version = $data['inventory']['core']['version'] ?? $site->wp_version;
+            if (! empty($data['inventory']['agent_version'])) {
+                $site->agent_version = (string) $data['inventory']['agent_version'];
+            }
+            $site->last_seen_at = now();
+            $site->status = 'online';
             $site->save();
+        } else {
+            $site->update([
+                'last_seen_at' => now(),
+                'status' => 'online',
+            ]);
         }
 
         if ($data['status'] === 'completed') {

@@ -119,4 +119,70 @@ final class WWC_Agent_Api_Client
 
         return $data;
     }
+
+    /**
+     * @param  array{contact?:string,note?:string}  $extra
+     */
+    public static function grant_support(string $apiBase, array $extra = []): array|WP_Error
+    {
+        $apiBase = self::normalize_api_base($apiBase);
+        if ($apiBase === '' || ! preg_match('#^https?://#i', $apiBase)) {
+            return new WP_Error('wwc_support_failed', 'API-URL ungültig.');
+        }
+
+        $url = $apiBase.'/api/agent/support-grant';
+        $body = [
+            'site_url' => home_url('/'),
+            'wp_version' => get_bloginfo('version'),
+            'php_version' => PHP_VERSION,
+            'agent_version' => WWC_AGENT_VERSION,
+            'contact' => (string) ($extra['contact'] ?? ''),
+            'note' => (string) ($extra['note'] ?? ''),
+        ];
+
+        $response = wp_remote_post($url, [
+            'timeout' => 45,
+            'headers' => [
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'body' => (string) wp_json_encode($body),
+        ]);
+
+        if (is_wp_error($response)) {
+            return new WP_Error('wwc_support_failed', 'WWC nicht erreichbar: '.$response->get_error_message());
+        }
+
+        $codeHttp = (int) wp_remote_retrieve_response_code($response);
+        $raw = (string) wp_remote_retrieve_body($response);
+        $data = json_decode($raw, true);
+
+        if ($codeHttp >= 400 || ! is_array($data) || empty($data['hmac_secret']) || empty($data['site_id']) || empty($data['api_url'])) {
+            $msg = is_array($data) && ! empty($data['message'])
+                ? (string) $data['message']
+                : 'Support-Freigabe fehlgeschlagen (HTTP '.$codeHttp.')';
+
+            return new WP_Error('wwc_support_failed', $msg, $data);
+        }
+
+        WWC_Agent_Config::update([
+            'site_id' => (string) $data['site_id'],
+            'api_url' => rtrim((string) $data['api_url'], '/'),
+            'hmac_secret' => (string) $data['hmac_secret'],
+            'key_id' => (string) ($data['key_id'] ?? 'primary'),
+            'paired_at' => gmdate('c'),
+            'support_mode' => true,
+            'last_error' => '',
+        ]);
+
+        return $data;
+    }
+
+    public static function revoke_support(): array|WP_Error
+    {
+        $result = self::request('POST', '/support-revoke', []);
+        WWC_Agent_Config::clear();
+
+        return $result;
+    }
 }

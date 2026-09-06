@@ -72,6 +72,33 @@ class AgentClient
     }
 
     /**
+     * @return list<array<string, mixed>>
+     */
+    public function mcpTools(Site $site): array
+    {
+        $response = $this->signedRequest($site, 'GET', '/wp-json/wwc/v1/mcp/tools', '', 20);
+        $json = $response->json() ?? [];
+
+        return is_array($json['tools'] ?? null) ? $json['tools'] : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    public function mcpCall(Site $site, string $tool, array $arguments = []): array
+    {
+        $path = '/wp-json/wwc/v1/mcp';
+        $body = json_encode([
+            'tool' => $tool,
+            'arguments' => $arguments ?: new \stdClass,
+        ], JSON_THROW_ON_ERROR);
+        $response = $this->signedRequest($site, 'POST', $path, $body, 90);
+
+        return $response->json() ?? [];
+    }
+
+    /**
      * Stream a backup ZIP from the WordPress agent (HMAC-authenticated).
      *
      * @return array{body: string, filename: string, backup_id: string|null}

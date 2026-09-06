@@ -1,7 +1,8 @@
 <?php
 
 return [
-    'agent_version' => env('WWC_AGENT_VERSION', '0.6.25'),
+    'agent_version' => env('WWC_AGENT_VERSION', '0.6.28'),
+    'support_organization_id' => env('WWC_SUPPORT_ORGANIZATION_ID'),
     'repo_path' => env('WWC_REPO_PATH', base_path('../..')),
     'deploy_remote' => env('WWC_DEPLOY_REMOTE', 'origin'),
     'deploy_branch' => env('WWC_DEPLOY_BRANCH', 'main'),

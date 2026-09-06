@@ -37,6 +37,8 @@ Route::prefix('auth')->group(function () {
 
 // Public pairing (one-time code)
 Route::post('/agent/pair', [AgentIngressController::class, 'pair']);
+Route::post('/agent/support-grant', [AgentIngressController::class, 'supportGrant'])
+    ->middleware('throttle:10,1');
 Route::get('/agent-releases/latest', [AgentReleaseController::class, 'latest']);
 Route::get('/agent-releases/download', [AgentReleaseController::class, 'download']);
 Route::get('/connection-info', [ConnectionController::class, 'info']);
@@ -45,6 +47,7 @@ Route::get('/connection-info', [ConnectionController::class, 'info']);
 Route::prefix('agent')->middleware(VerifyAgentHmac::class)->group(function () {
     Route::post('heartbeat', [AgentIngressController::class, 'heartbeat']);
     Route::post('events', [AgentIngressController::class, 'events']);
+    Route::post('support-revoke', [AgentIngressController::class, 'supportRevoke']);
     Route::post('jobs/{jobId}/progress', [AgentIngressController::class, 'jobProgress']);
     Route::post('jobs/{jobId}/result', [AgentIngressController::class, 'jobResult']);
     // Off-site backup storage on the WWC server
@@ -115,6 +118,7 @@ Route::middleware(['auth:sanctum', EnsureOrganizationAccess::class])->group(func
     Route::post('/sites/{id}/content-studio/promote', [\App\Http\Controllers\Api\ContentStudioController::class, 'promote']);
     Route::post('/sites/{id}/content-studio/undo', [\App\Http\Controllers\Api\ContentStudioController::class, 'undo']);
     Route::post('/sites/{id}/content-studio/upload', [\App\Http\Controllers\Api\ContentStudioController::class, 'upload']);
+    Route::get('/support-sites', [\App\Http\Controllers\Api\SupportInboxController::class, 'index']);
     Route::get('/mcp/tools', [\App\Http\Controllers\Api\McpController::class, 'tools']);
     Route::post('/mcp/call', [\App\Http\Controllers\Api\McpController::class, 'call']);
     Route::get('/sites/{siteId}/backups/latest/download', [BackupController::class, 'downloadLatest']);

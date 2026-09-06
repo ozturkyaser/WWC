@@ -15,6 +15,7 @@ final class WWC_Agent_Config
             'hmac_secret_previous' => '',
             'key_id' => '',
             'paired_at' => '',
+            'support_mode' => false,
             'last_sync_at' => '',
             'last_error' => '',
         ];
