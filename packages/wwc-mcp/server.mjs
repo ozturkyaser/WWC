@@ -7,7 +7,7 @@
  *   WWC_TOKEN=<Sanctum-Token aus dem Portal>
  */
 const apiUrl = (process.env.WWC_API_URL || "https://wwc.kiservicehub.de").replace(/\/$/, "");
-const token = process.env.WWC_TOKEN || "";
+const token = process.env.WWC_TOKEN || process.env.WWC_API_TOKEN || "";
 
 const tools = [
   {

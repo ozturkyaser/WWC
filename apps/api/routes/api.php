@@ -31,6 +31,8 @@ Route::prefix('auth')->group(function () {
         Route::post('2fa/setup', [AuthController::class, 'twoFactorSetup']);
         Route::post('2fa/enable', [AuthController::class, 'twoFactorEnable']);
         Route::post('2fa/disable', [AuthController::class, 'twoFactorDisable']);
+        Route::get('mcp-token', [AuthController::class, 'mcpTokenStatus']);
+        Route::post('mcp-token', [AuthController::class, 'issueMcpToken']);
     });
     Route::post('invite/accept', [\App\Http\Controllers\Api\TeamController::class, 'accept']);
 });

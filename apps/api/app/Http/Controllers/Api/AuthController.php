@@ -241,4 +241,44 @@ class AuthController extends Controller
 
         return response()->json(['ok' => true]);
     }
+
+    public function mcpTokenStatus(Request $request)
+    {
+        $token = $request->user()->tokens()->where('name', 'mcp')->latest()->first();
+
+        return response()->json([
+            'exists' => $token !== null,
+            'created_at' => $token?->created_at,
+            'last_used_at' => $token?->last_used_at,
+        ]);
+    }
+
+    public function issueMcpToken(Request $request)
+    {
+        $user = $request->user();
+        $user->tokens()->where('name', 'mcp')->delete();
+        $plain = $user->createToken('mcp')->plainTextToken;
+        $api = rtrim((string) config('wwc.public_api_url', config('app.url')), '/');
+        $cursor = [
+            'mcpServers' => [
+                'wwc' => [
+                    'command' => 'node',
+                    'args' => ['/Users/yaserozturk/Downloads/WWC/packages/wwc-mcp/server.mjs'],
+                    'env' => [
+                        'WWC_API_URL' => $api,
+                        'WWC_TOKEN' => $plain,
+                    ],
+                ],
+            ],
+        ];
+
+        AuditLogger::log('auth.mcp_token', $user->current_organization_id, $user, null, [], $request);
+
+        return response()->json([
+            'token' => $plain,
+            'api_url' => $api,
+            'cursor_config' => $cursor,
+            'shown_once' => true,
+        ]);
+    }
 }

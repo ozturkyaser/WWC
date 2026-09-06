@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { McpConnect } from "@/components/McpConnect";
 import { Flash, PageHeader, Section } from "@/components/ui";
 import { api } from "@/lib/api";
 
@@ -370,9 +371,10 @@ export default function SettingsPage() {
     <Shell>
       <PageHeader
         title="Einstellungen"
-        subtitle="Organisation, Stundenpakete, Wartungsstufen und Rechnungsdaten."
+        subtitle="Organisation, MCP-Verbindungscode, Stundenpakete und Rechnungsdaten."
       />
       <Flash tone={tone}>{msg}</Flash>
+      <McpConnect />
 
       <form onSubmit={save}>
         <Section title="Organisation" note="Name im Portal">

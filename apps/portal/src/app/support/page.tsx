@@ -38,7 +38,7 @@ export default function SupportPage() {
     <Shell>
       <PageHeader
         title="Support"
-        subtitle="Kunden haben den Agenten installiert und den Zugang freigegeben – ohne Pairing-Code."
+        subtitle="Kunden haben den Agenten installiert und den Zugang freigegeben – ohne Pairing-Code. Der Cursor-Verbindungscode liegt unter MCP."
       />
       <Flash tone="error">{error}</Flash>
       <div className="surface">

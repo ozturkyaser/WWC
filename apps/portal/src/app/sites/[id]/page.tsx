@@ -1989,8 +1989,11 @@ export default function SiteDetailPage() {
                     }
                   }}
                 >
-                  Kopie scannen / MCP
+                  Kopie scannen
                 </button>
+                <Link className="btn secondary" href="/mcp">
+                  Cursor-Code
+                </Link>
                 <button
                   className="btn secondary"
                   type="button"
